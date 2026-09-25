@@ -175,8 +175,8 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
   - [x] 11.2 아티스트 탐색·구독 (`artist_view`, `artist_follow`, `artist_unfollow`, `message_subscription_start`, `message_subscription_cancel`) 완료
   - [x] 11.3 소통·콘텐츠 이용 (`artist_post_view`, `message_open`, `live_view_start`, `content_view`, `content_like`, `comment_create`) 완료
   - [x] 11.4 커머스 (`view_item`, `add_to_cart`, `begin_checkout`, `purchase`, `refund`) 완료
-- [ ] ERD + `data_dictionary.md` 작성
+- [x] ERD + `data_dictionary.md` 작성 완료
 - [ ] `config/data_generation.yaml` 초안 작성
 - [ ] 소량 샘플 데이터 생성 스크립트 작성
 
-**다음에 이어서 할 작업: ERD + `data_dictionary.md` 작성**
+**다음에 이어서 할 작업: `config/data_generation.yaml` 초안 작성**
