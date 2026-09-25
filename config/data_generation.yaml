@@ -2,10 +2,11 @@
 # 이 파일은 src/generation/ 스크립트가 읽어들이는 단일 설정 기준이다.
 # PRD 13절, data_dictionary.md 기준으로 작성되었다.
 # v1.2: activity_intensity_levels 빈도를 상향 조정하여 scale.artist_activities(300~700) 목표와 정합시킴
+# v1.3: bridge_user_artist_follow, fact_message_subscription 생성을 위한 relationships 섹션 추가
 
 meta:
   project_name: fanlog-user-behavior-analytics
-  config_version: 1.2
+  config_version: 1.3
   random_seed: 20260923
   analysis_period_days: 90
   analysis_start_date: "2026-01-01"  # KST 기준, 실행 시 조정 가능
@@ -149,6 +150,27 @@ commerce:
     apparel: [20000, 80000]
     collab: [10000, 150000]
   order_item_quantity_range: [1, 3]
+
+relationships:
+  # 가정: 팬 1명당 팔로우하는 아티스트 수 분포 (3팀 중)
+  follow_count_distribution:
+    1: 0.50
+    2: 0.35
+    3: 0.15
+  # 가정: 아티스트 인기도는 활동 강도에 비례 (dim_content 배분과 동일 가중치 재사용)
+  artist_popularity_weight:
+    high: 1.5
+    medium: 1.0
+    low: 0.7
+  # 가정: 활성 팔로우 관계 중 분석 기간 내 언팔로우로 종료되는 비율
+  unfollow_rate: 0.08
+  subscription:
+    # 가정: 활성 팔로우 관계 중 유료 메시지 구독으로 전환되는 비율
+    conversion_rate_from_follow: 0.20
+    # 가정: 구독 중 분석 기간 내 해지(능동+자동만료)되는 비율
+    cancel_rate_within_period: 0.15
+    # 가정: 해지 사유 중 능동 해지 비율 (나머지는 자동 만료)
+    user_cancel_share_of_cancellations: 0.60
 
 data_quality_injection:
   # PRD 13.5. 원본(raw) 계층에만 적용하며 정제 데이터에는 반영하지 않는다.
