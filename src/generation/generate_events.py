@@ -170,20 +170,161 @@ def _compute_exposure_events_by_user(
     return exposure_events_by_user
 
 
+def _compute_content_engagement_rows(
+    config: dict,
+    rng: np.random.Generator,
+    engagement_propensity: dict,
+    dim_content: pd.DataFrame,
+    bridge_user_artist_follow: pd.DataFrame,
+    session_rows: list,
+) -> list:
+    """세션마다 콘텐츠 조회(content_view)와 그에 따른 좋아요/댓글
+    (content_like/comment_create)을 생성한다. 새 세션을 만들지 않고
+    기존 세션(session_rows)에만 이벤트를 붙인다.
+
+    반환값: all_rows에 이어붙일 이벤트 dict 리스트
+    """
+    cfg = config["content_engagement"]
+    base_views_mean = cfg["base_views_per_session_mean"]
+    prop_min, prop_max = cfg["propensity_multiplier_range"]
+    followed_weight = cfg["followed_artist_weight"]
+    halflife_days = cfg["recency_halflife_days"]
+    like_rate = cfg["like_rate"]
+    comment_rate = cfg["comment_rate"]
+
+    content_propensity_multiplier = {
+        uid: prop_min + p * (prop_max - prop_min) for uid, p in engagement_propensity.items()
+    }
+
+    content_ids = dim_content["content_id"].reset_index(drop=True)
+    content_artist_ids = dim_content["artist_id"].reset_index(drop=True)
+    content_published = pd.to_datetime(
+        dim_content["published_timestamp_utc"], utc=True
+    ).reset_index(drop=True)
+
+    follow = bridge_user_artist_follow.copy()
+    follow["followed_dt"] = pd.to_datetime(follow["followed_at_utc"], utc=True)
+    follow["unfollowed_dt"] = pd.to_datetime(follow["unfollowed_at_utc"], utc=True)
+    follow_by_user = {uid: g for uid, g in follow.groupby("user_id")}
+
+    liked_pairs = set()  # (user_id, content_id) - 한 팬은 같은 콘텐츠에 한 번만 좋아요
+    new_rows = []
+
+    for session in session_rows:
+        user_id = session["user_id"]
+        session_id = session["session_id"]
+        session_ts = session["timestamp"]
+        session_ts_pd = pd.Timestamp(session_ts)
+
+        published_mask = content_published <= session_ts_pd
+        if not published_mask.any():
+            continue
+
+        eligible_ids = content_ids[published_mask].to_numpy()
+        eligible_artist_ids = content_artist_ids[published_mask]
+        eligible_published = content_published[published_mask]
+
+        age_days = (session_ts_pd - eligible_published) / pd.Timedelta(days=1)
+        recency_factor = (0.5 ** (age_days / halflife_days)).to_numpy()
+
+        user_follows = follow_by_user.get(user_id)
+        if user_follows is not None:
+            active_follow_mask = (user_follows["followed_dt"] <= session_ts_pd) & (
+                user_follows["unfollowed_dt"].isna() | (user_follows["unfollowed_dt"] > session_ts_pd)
+            )
+            followed_artist_ids = set(user_follows.loc[active_follow_mask, "artist_id"])
+        else:
+            followed_artist_ids = set()
+
+        artist_weight = np.where(eligible_artist_ids.isin(followed_artist_ids), followed_weight, 1.0)
+        weight = artist_weight * recency_factor
+        weight_sum = weight.sum()
+        if weight_sum <= 0:
+            continue
+        probs = weight / weight_sum
+
+        multiplier = content_propensity_multiplier[user_id]
+        n_views = int(rng.poisson(base_views_mean * multiplier))
+        if n_views <= 0:
+            continue
+
+        chosen_positions = rng.choice(len(eligible_ids), size=n_views, replace=True, p=probs)
+
+        like_prob = min(max(like_rate * multiplier, 0.0), 1.0)
+        comment_prob = min(max(comment_rate * multiplier, 0.0), 1.0)
+
+        for pos in chosen_positions:
+            content_id = eligible_ids[pos]
+            view_offset = int(rng.integers(0, 1501))  # 0~25분 (30분 세션 정의를 벗어나지 않도록)
+            view_ts = session_ts + timedelta(seconds=view_offset)
+
+            new_rows.append(
+                {
+                    "event_name": "content_view",
+                    "timestamp": view_ts,
+                    "user_id": user_id,
+                    "session_id": session_id,
+                    "artist_id": "",
+                    "activity_id": "",
+                    "content_id": content_id,
+                    "device_type": _random_device_type(rng),
+                    "parameters": None,
+                }
+            )
+
+            like_triggered = rng.random() < like_prob
+            if like_triggered and (user_id, content_id) not in liked_pairs:
+                like_ts = view_ts + timedelta(seconds=int(rng.integers(5, 301)))
+                new_rows.append(
+                    {
+                        "event_name": "content_like",
+                        "timestamp": like_ts,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "artist_id": "",
+                        "activity_id": "",
+                        "content_id": content_id,
+                        "device_type": _random_device_type(rng),
+                        "parameters": None,
+                    }
+                )
+                liked_pairs.add((user_id, content_id))
+
+            comment_triggered = rng.random() < comment_prob
+            if comment_triggered:
+                comment_ts = view_ts + timedelta(seconds=int(rng.integers(5, 301)))
+                new_rows.append(
+                    {
+                        "event_name": "comment_create",
+                        "timestamp": comment_ts,
+                        "user_id": user_id,
+                        "session_id": session_id,
+                        "artist_id": "",
+                        "activity_id": "",
+                        "content_id": content_id,
+                        "device_type": _random_device_type(rng),
+                        "parameters": None,
+                    }
+                )
+
+    return new_rows
+
+
 def generate_fact_user_event(
     config: dict,
     sensitivity_config: dict,
     scenario_name: str,
     dim_user: pd.DataFrame,
     dim_activity_phase: pd.DataFrame,
+    dim_content: pd.DataFrame,
     bridge_user_artist_follow: pd.DataFrame,
     fact_message_subscription: pd.DataFrame,
     fact_artist_activity: pd.DataFrame,
 ):
-    """fact_user_event 9종 이벤트를 생성한다:
+    """fact_user_event 12종 이벤트를 생성한다:
     sign_up, session_start, artist_follow/unfollow,
     message_subscription_start/cancel, artist_post_view, message_open,
-    live_view_start.
+    live_view_start, content_view, content_like, comment_create.
 
     반환값: (fact_user_event DataFrame, 즉석 생성된 세션 수)
     """
@@ -390,6 +531,20 @@ def generate_fact_user_event(
                 }
             )
 
+    # --- 콘텐츠 소비 이벤트(content_view/content_like/comment_create):
+    # 새 세션을 만들지 않고 지금까지 생성된 모든 session_start(즉석 생성 포함)에만
+    # 붙인다. session_number 등 세션 구조 자체는 변경하지 않는다. ---
+    session_rows = [r for r in all_rows if r["event_name"] == "session_start"]
+    content_rows = _compute_content_engagement_rows(
+        config,
+        rng,
+        engagement_propensity,
+        dim_content,
+        bridge_user_artist_follow,
+        session_rows,
+    )
+    all_rows.extend(content_rows)
+
     # --- 전체 이벤트 시간순 정렬 후 event_id 전역 순번 부여 ---
     all_rows.sort(key=lambda r: r["timestamp"])
     final_rows = []
@@ -406,7 +561,7 @@ def generate_fact_user_event(
                 "user_id": r["user_id"],
                 "session_id": r["session_id"],
                 "artist_id": r["artist_id"],
-                "content_id": "",
+                "content_id": r.get("content_id", ""),
                 "activity_id": r["activity_id"],
                 "product_id": "",
                 "transaction_id": "",
@@ -421,7 +576,7 @@ def generate_fact_user_event(
 
 def main():
     parser = argparse.ArgumentParser(
-        description="fact_user_event 생성 (회원·세션·팔로우·구독·소통 노출 9종 이벤트)"
+        description="fact_user_event 생성 (회원·세션·팔로우·구독·소통 노출·콘텐츠 소비 12종 이벤트)"
     )
     parser.add_argument("--config", type=str, default="config/data_generation.yaml")
     parser.add_argument(
@@ -438,8 +593,9 @@ def main():
         "--input-dir",
         type=str,
         default="data/raw",
-        help="dim_user.csv, dim_activity_phase.csv, bridge_user_artist_follow.csv, "
-        "fact_message_subscription.csv, fact_artist_activity.csv가 있는 디렉터리",
+        help="dim_user.csv, dim_activity_phase.csv, dim_content.csv, "
+        "bridge_user_artist_follow.csv, fact_message_subscription.csv, "
+        "fact_artist_activity.csv가 있는 디렉터리",
     )
     parser.add_argument("--output-dir", type=str, default="data/raw")
     parser.add_argument(
@@ -470,6 +626,7 @@ def main():
     fact_artist_activity = pd.read_csv(
         os.path.join(args.input_dir, "fact_artist_activity.csv"), dtype={"content_id": "string"}
     )
+    dim_content = pd.read_csv(os.path.join(args.input_dir, "dim_content.csv"))
 
     fact_user_event, adhoc_session_count = generate_fact_user_event(
         config,
@@ -477,6 +634,7 @@ def main():
         args.scenario,
         dim_user,
         dim_activity_phase,
+        dim_content,
         bridge_user_artist_follow,
         fact_message_subscription,
         fact_artist_activity,

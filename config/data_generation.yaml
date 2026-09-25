@@ -4,10 +4,11 @@
 # v1.2: activity_intensity_levels 빈도를 상향 조정하여 scale.artist_activities(300~700) 목표와 정합시킴
 # v1.3: bridge_user_artist_follow, fact_message_subscription 생성을 위한 relationships 섹션 추가
 # v1.4: artist_post_view/message_open/live_view_start 노출 확률 모델(exposure_model) 섹션 추가
+# v1.5: content_view/content_like/comment_create 생성을 위한 content_engagement 섹션 추가
 
 meta:
   project_name: fanlog-user-behavior-analytics
-  config_version: 1.4
+  config_version: 1.5
   random_seed: 20260923
   analysis_period_days: 90
   analysis_start_date: "2026-01-01"  # KST 기준, 실행 시 조정 가능
@@ -188,6 +189,22 @@ exposure_model:
     min_seconds: 60
     mean_additional_seconds: 180
     max_seconds: 10800
+
+content_engagement:
+  # 가정: 세션 하나당 조회하는 콘텐츠 개수의 기준 평균(포아송 분포)
+  base_views_per_session_mean: 1.5
+  # 팬의 engagement_propensity(Beta(2,6))에 따른 배수 범위 (exposure_model과
+  # 동일한 방식으로 0~1을 이 범위로 선형 변환)
+  propensity_multiplier_range: [0.6, 1.6]
+  # 가정: 팬이 팔로우 중인 아티스트의 콘텐츠가 뽑힐 확률 가중치 (비팔로우
+  # 콘텐츠 대비 배수)
+  followed_artist_weight: 5.0
+  # 가정: 콘텐츠 나이(발행일로부터 경과일)에 따른 조회 확률 반감기(일)
+  recency_halflife_days: 14
+  # 가정: 조회된 콘텐츠 중 좋아요/댓글로 이어질 기본 확률 (역시 팬의
+  # engagement_propensity로 배수 조정됨)
+  like_rate: 0.35
+  comment_rate: 0.08
 
 data_quality_injection:
   # PRD 13.5. 원본(raw) 계층에만 적용하며 정제 데이터에는 반영하지 않는다.

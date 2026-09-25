@@ -135,6 +135,13 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - **`communication_effect`는 여기서 적용된다**: `phase_effect = 1 + communication_effect * phase_effect_scale * (phase_multiplier[phase_type] - 1)`. `communication_effect=1.0`(baseline)이면 활동기(`comeback_active`/`tour`)는 노출 확률이 올라가고 비활동기(`inactive`)는 내려간다. `communication_effect=0`(null_effect)이면 이 항이 완전히 사라져 모든 phase_type에서 `phase_effect=1`이 된다 — PRD 13.4의 순환 논리 방지 장치가 실제로 여기서 작동한다.
 - **baseline vs null_effect 검증 결과** (400명 규모, `n_exposures / n_eligible_target`로 계산한 노출률): baseline에서는 3개 아티스트 전부 활동기(`comeback_active`+`tour` 가중평균) 노출률이 비활동기보다 뚜렷이 높았다(차이 +0.047~+0.063). null_effect에서는 같은 차이가 -0.001~-0.011로 거의 사라졌다(작은 표본에서 오는 잡음 수준). 최초에는 "노출 이벤트 수 ÷ 활동 건수"로 비교했는데 `inactive` 구간의 활동 건수 자체가 너무 적어(`phase_multiplier=0.2`로 활동도 적게 생성됨) 비율이 크게 튀었다 — 대상 팬 수(분모)를 정확히 세는 방식으로 바꾸고 나서야 기대한 패턴이 뚜렷하게 확인됐다. 최종 산출물 `data/raw/fact_user_event.csv`는 baseline 결과이고, `fact_user_event_null_effect.csv`는 이 비교 검증용으로만 남겨둔 파일이다.
 
+### 5.12 콘텐츠 소비 모델 (content_engagement)
+
+- **설계 요지** (`config/data_generation.yaml`): 세션마다 조회 콘텐츠 수는 `Poisson(base_views_per_session_mean=1.5 × propensity_multiplier)`로 뽑는다(중복 조회 허용). 조회 대상 콘텐츠는 "그 세션 시각 이전에 발행된" 콘텐츠 전체 중에서 `weight = (팔로우 중이면 followed_artist_weight=5.0, 아니면 1.0) × 0.5^(콘텐츠 나이/14일)`로 가중 추출한다. 좋아요·댓글은 조회마다 독립적으로 `like_rate=0.35`/`comment_rate=0.08`에 같은 `propensity_multiplier`를 곱해 판정하고, 좋아요는 같은 (팬, 콘텐츠) 조합에 한 번만 허용한다. 콘텐츠는 전체 공개이므로 새 세션을 만들지 않고 기존 세션에만 붙인다.
+- **검증 중 발견한 measurement 함정**: "팔로우 콘텐츠 조회 비중"을 처음에 `dim_content` 전체에서 "팬이 한 번이라도 팔로우한 아티스트의 콘텐츠 비중"으로 비교했더니(naive baseline 57.5%) 실제 관측치(53.7%)보다 오히려 낮게 나와 언뜻 가중치가 안 먹힌 것처럼 보였다. 원인은 이 baseline이 최신성 감쇠와 "그 세션 시각에 아직 발행/팔로우되지 않은 콘텐츠는 애초에 후보가 아니다"라는 제약을 반영하지 못했기 때문이다. `followed_artist_weight`만 1.0으로 끈 반사실(counterfactual, recency는 그대로 유지) 대비로 다시 비교하니 **34.5% → 53.7%**로 뚜렷한 상승이 확인됐다. 앞으로 이런 "가중치 하나의 효과"를 검증할 때는 전체 모수 대비 단순 비율이 아니라, 그 가중치만 끈 반사실과 비교해야 한다는 교훈을 남긴다.
+- **좋아요/댓글 비율이 목표(35%/8%)보다 낮게 나온 이유**: `propensity_multiplier_range=[0.6,1.6]`에 `engagement_propensity~Beta(2,6)`(평균 0.25)를 대입하면 실제 평균 배수는 1.0이 아니라 `0.6+0.25×1.0=0.85`다. 댓글(중복 제약 없음)은 `8%×0.85=6.8%` 예측과 관측치 7.05%가 거의 일치해 모델이 정확히 작동함을 보여준다. 좋아요(26.78%)는 `35%×0.85=29.75%` 예측보다 더 낮은데, "같은 콘텐츠 두 번째 조회부터는 좋아요 재생성 안 함" 규칙이 추가로 비율을 깎기 때문이며 의도한 동작이다.
+- **최종 검증 요약** (400명, baseline): 12종 이벤트 합계 38,945건(목표 상한 150,000건 대비 여유 있음). 팔로우 콘텐츠 조회 비중 34.5%→53.7%로 상승(반사실 대비), 조회 콘텐츠 평균 나이 15.4일 vs 전체 콘텐츠 평균 나이 50.9일(최신성 편향 확인), 좋아요 중복 0건, `content_id` 참조 무결성 위반 0건, `session_number` 순차성 위반 0건(콘텐츠 이벤트가 새 세션을 만들지 않으므로 1~2단계 결과 그대로 유지), 재현성 확인됨.
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)
