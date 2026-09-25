@@ -252,5 +252,6 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
   - [x] fact_user_event 4/4(커머스: view_item/add_to_cart/begin_checkout/purchase/refund) 및 fact_order/fact_order_item 생성 완료
 - [x] 데이터 생성 파이프라인 1차 완성 (1,750명 규모, 전체 검증 통과)
 - [x] PostgreSQL DDL 작성 및 데이터 적재 완료 (11개 테이블 + meta_generation_run, 행 수 검증 통과)
+- [x] SQL 품질검사 1/5 (기본키·외래키·결측) 작성 및 실행 완료 (`sql/quality_checks/001_keys_and_referential_integrity.sql`, DQ-01~03·ET-DQ-01~06 총 9개 규칙, 1,750명 실규모 데이터 전수 검증 — 위반 0건)
 
-**다음에 이어서 할 작업: SQL 데이터 품질검사 쿼리 작성 (DQ-01~10, ET-DQ-01~28)**
+**다음에 이어서 할 작업: SQL 데이터 품질검사 쿼리 2/5 이후 작성 (남은 DQ-04~10, ET-DQ-07~28)**
