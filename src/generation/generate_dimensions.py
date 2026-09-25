@@ -3,16 +3,13 @@ import os
 import random
 import sys
 from datetime import date, datetime, timedelta
-from zoneinfo import ZoneInfo
 
 import numpy as np
 import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_config
-
-KST = ZoneInfo("Asia/Seoul")
-UTC = ZoneInfo("UTC")
+from time_utils import KST, random_utc_timestamp
 
 DIM_ARTIST_COLUMNS = ["artist_id", "artist_name", "artist_type", "debut_year"]
 DIM_USER_COLUMNS = [
@@ -69,13 +66,6 @@ def generate_dim_artist(config: dict) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=DIM_ARTIST_COLUMNS)
 
 
-def _random_utc_timestamp(rng: np.random.Generator, start_kst: datetime, end_kst: datetime) -> datetime:
-    span_seconds = int((end_kst - start_kst).total_seconds())
-    offset_seconds = int(rng.integers(0, span_seconds))
-    dt_kst = start_kst + timedelta(seconds=offset_seconds)
-    return dt_kst.astimezone(UTC)
-
-
 def generate_dim_user(config: dict, user_count: int) -> pd.DataFrame:
     seed = config["meta"]["random_seed"]
     rng = np.random.default_rng(seed)
@@ -123,9 +113,9 @@ def generate_dim_user(config: dict, user_count: int) -> pd.DataFrame:
     rows = []
     for i in range(user_count):
         if is_existing[i]:
-            signup_utc = _random_utc_timestamp(rng, existing_window_start, existing_window_end)
+            signup_utc = random_utc_timestamp(rng, existing_window_start, existing_window_end)
         else:
-            signup_utc = _random_utc_timestamp(rng, new_window_start, new_window_end)
+            signup_utc = random_utc_timestamp(rng, new_window_start, new_window_end)
 
         signup_date_kst = signup_utc.astimezone(KST).date()
 
@@ -281,7 +271,7 @@ def generate_dim_content(
 
             for i in range(phase_count):
                 seq += 1
-                published_utc = _random_utc_timestamp(rng, start_kst, end_kst_exclusive)
+                published_utc = random_utc_timestamp(rng, start_kst, end_kst_exclusive)
                 content_type = phase_content_types[i]
                 rows.append(
                     {
@@ -344,9 +334,9 @@ def generate_dim_product(config: dict, dim_artist: pd.DataFrame) -> pd.DataFrame
             price = int(round(raw_price / 1000)) * 1000
 
             if is_new[i]:
-                release_utc = _random_utc_timestamp(rng, new_window_start, new_window_end)
+                release_utc = random_utc_timestamp(rng, new_window_start, new_window_end)
             else:
-                release_utc = _random_utc_timestamp(rng, existing_window_start, existing_window_end)
+                release_utc = random_utc_timestamp(rng, existing_window_start, existing_window_end)
 
             rows.append(
                 {

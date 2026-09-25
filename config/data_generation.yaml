@@ -5,10 +5,15 @@
 # v1.3: bridge_user_artist_follow, fact_message_subscription 생성을 위한 relationships 섹션 추가
 # v1.4: artist_post_view/message_open/live_view_start 노출 확률 모델(exposure_model) 섹션 추가
 # v1.5: content_view/content_like/comment_create 생성을 위한 content_engagement 섹션 추가
+# v1.6: view_item/add_to_cart/begin_checkout/purchase/refund 생성을 위한 commerce_funnel 섹션 추가
+# v1.7: 경로 A(조회 후 전환)와 경로 B(직접 담기)의 비율이 의도(예외적 소수)와 다르게
+#       거의 1:1로 나와서, base_view_rate를 높이고 direct_add_to_cart_rate_per_session을
+#       낮춰 조정함
+# v1.8: fact_user_event 총량이 상한(150,000)을 초과해 조정함
 
 meta:
   project_name: fanlog-user-behavior-analytics
-  config_version: 1.5
+  config_version: 1.8
   random_seed: 20260923
   analysis_period_days: 90
   analysis_start_date: "2026-01-01"  # KST 기준, 실행 시 조정 가능
@@ -192,7 +197,8 @@ exposure_model:
 
 content_engagement:
   # 가정: 세션 하나당 조회하는 콘텐츠 개수의 기준 평균(포아송 분포)
-  base_views_per_session_mean: 1.5
+  # v1.8: fact_user_event 총량이 상한(150,000)을 초과해 조정함 (1.5 -> 0.75)
+  base_views_per_session_mean: 0.75
   # 팬의 engagement_propensity(Beta(2,6))에 따른 배수 범위 (exposure_model과
   # 동일한 방식으로 0~1을 이 범위로 선형 변환)
   propensity_multiplier_range: [0.6, 1.6]
@@ -205,6 +211,29 @@ content_engagement:
   # engagement_propensity로 배수 조정됨)
   like_rate: 0.35
   comment_rate: 0.08
+
+commerce_funnel:
+  # v1.7: 경로 A(조회 후 전환)와 경로 B(직접 담기)의 비율이 의도(예외적 소수)와
+  # 다르게 거의 1:1로 나와서, base_view_rate를 높이고
+  # direct_add_to_cart_rate_per_session을 낮춰 조정함
+  base_view_rate: 0.20
+  # purchase_propensity(Beta(1.5,8))를 0.4~1.8 범위로 선형 변환한 배수
+  purchase_propensity_multiplier_range: [0.4, 1.8]
+  # H-03(참여 팬이 구매전환도 높다) 가설이 데이터에 반영되도록,
+  # engagement_propensity도 보조 배수로 곱한다
+  engagement_multiplier_weight: 0.3
+  followed_artist_product_weight: 3.0
+  product_recency_halflife_days: 30
+  # 가정: 상세조회 없이 목록에서 바로 담는 열린 퍼널 우회 비율(세션당 포아송 평균)
+  # v1.7: 경로 A(조회 후 전환)와 경로 B(직접 담기)의 비율이 의도(예외적 소수)와
+  # 다르게 거의 1:1로 나와서, base_view_rate를 높이고
+  # direct_add_to_cart_rate_per_session을 낮춰 조정함
+  direct_add_to_cart_rate_per_session: 0.006
+  view_to_cart_rate: 0.25
+  cart_to_checkout_rate: 0.55
+  checkout_to_purchase_rate: 0.85
+  refund_window_days: 14
+  refund_full_share: 0.7
 
 data_quality_injection:
   # PRD 13.5. 원본(raw) 계층에만 적용하며 정제 데이터에는 반영하지 않는다.

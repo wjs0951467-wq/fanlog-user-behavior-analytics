@@ -142,6 +142,38 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - **좋아요/댓글 비율이 목표(35%/8%)보다 낮게 나온 이유**: `propensity_multiplier_range=[0.6,1.6]`에 `engagement_propensity~Beta(2,6)`(평균 0.25)를 대입하면 실제 평균 배수는 1.0이 아니라 `0.6+0.25×1.0=0.85`다. 댓글(중복 제약 없음)은 `8%×0.85=6.8%` 예측과 관측치 7.05%가 거의 일치해 모델이 정확히 작동함을 보여준다. 좋아요(26.78%)는 `35%×0.85=29.75%` 예측보다 더 낮은데, "같은 콘텐츠 두 번째 조회부터는 좋아요 재생성 안 함" 규칙이 추가로 비율을 깎기 때문이며 의도한 동작이다.
 - **최종 검증 요약** (400명, baseline): 12종 이벤트 합계 38,945건(목표 상한 150,000건 대비 여유 있음). 팔로우 콘텐츠 조회 비중 34.5%→53.7%로 상승(반사실 대비), 조회 콘텐츠 평균 나이 15.4일 vs 전체 콘텐츠 평균 나이 50.9일(최신성 편향 확인), 좋아요 중복 0건, `content_id` 참조 무결성 위반 0건, `session_number` 순차성 위반 0건(콘텐츠 이벤트가 새 세션을 만들지 않으므로 1~2단계 결과 그대로 유지), 재현성 확인됨.
 
+### 5.13 커머스 퍼널 모델 (commerce_funnel) — 묶음 주문 처리
+
+- **묶음 주문(bundling) 결정**: 실제 쇼핑몰처럼 한 번의 결제에 여러 상품이 담길 수 있어야 분석 가치가 있다고 보고, `(user_id, session_id)` 단위로 그 세션에서 담긴 장바구니 전체를 하나의 `transaction_id`로 묶어 `begin_checkout`을 발생시키기로 했다. `fact_order_item`은 상품별로(add_to_cart 이벤트별이 아니라) 한 행만 생성하며, 같은 상품이 그 세션에서 여러 번 담겼더라도 `fact_order_item`에는 중복 없이 한 행 + 수량으로 반영된다.
+- **설계 요지** (`config/data_generation.yaml`): `view_item` 조회 수는 `Poisson(base_view_rate=0.12 × purchase_multiplier × engagement_factor)`로 뽑는다. 상품 선택 가중치는 콘텐츠 모델과 동일한 패턴(`followed_artist_product_weight=3.0 × 0.5^(상품 나이/30일)`). `add_to_cart`는 조회 후 전환(경로 A, `view_to_cart_rate=0.25`)과 조회 없이 바로 담는 열린 퍼널 우회(경로 B, `direct_add_to_cart_rate_per_session=0.02`) 두 경로로 생성된다. `cart_to_checkout_rate=0.55`, `checkout_to_purchase_rate=0.85`를 통과 못 하면 각각 "미완료 장바구니"/"pending 주문"으로 남고 오류로 취급하지 않는다(9.2절 열린 퍼널 원칙과 동일). 환불은 완료 주문의 `refund_rate_target=0.05`만큼, 14일 이내 무작위 시점에 전액(70%) 또는 부분(20~80%) 환불로 처리한다.
+- **검증 결과 (400명, baseline)**: `purchase.value`와 `fact_order_item` 합계 불일치 0건, `refund_amount > order_amount` 위반 0건, 모든 `product_id`/`transaction_id` 참조 무결성 위반 0건, 재현성 확인됨. **H-03 검증**(참여 팬이 구매전환도 높다): `content_like`+`comment_create` 총합 기준 상위 50% 그룹의 상품 조회→구매 전환율 **51.45%**, 하위 50% 그룹 **35.92%** — 뚜렷한 차이로 가설이 데이터에 반영됨을 확인했다.
+- **⚠️ 400명(테스트 규모)에서 목표 범위 미달 — 조정 필요 여부 확인 필요**:
+  - `fact_order` 총 247건 (`config.scale.orders` 목표 1,000~2,500 미달). 깔때기 역산(조회→장바구니→체크아웃→구매 각 단계 실측 전환율)으로 검증한 결과 설정값과 정확히 일치해 **로직 버그는 아니다.** 다만 400명은 최종 목표(1,500~2,000명)의 20~27%에 불과해 단순 비례 외삽 시 1,500명이면 약 926건(목표 미달), 2,000명이면 약 1,235건(목표 충족)으로 경계에 걸친다.
+  - `fact_user_event` 총 38,908건(12→17종 확장 후에도 목표 80,000~150,000 미달). 같은 방식으로 외삽하면 1,500명 약 145,905건(목표 내), 2,000명 약 194,540건(**상한 초과**)로, 사용자 수 설정에 따라 상한을 넘을 수 있다.
+  - 주문당 평균 상품 개수는 1.004(247건 중 2개 이상 묶인 주문 1건)로, "묶음 처리가 작동한다는 뚜렷한 증거"로 보기엔 약하다. 메커니즘 자체는 그 1건으로 정상 작동이 확인됐지만, `base_view_rate`가 낮아 한 세션에 서로 다른 상품 2개 이상이 담기는 경우가 드물다.
+  - `add_to_cart` 중 `view_item` 없이 발생한 비율이 56.80%로 나왔는데, 이는 `direct_add_to_cart_rate_per_session`(0.02) 자체보다 훨씬 높다. 원인은 경로 A(조회→담기: 세션당 기대값 약 0.016)가 경로 B(직접 담기: 세션당 0.02)보다 오히려 작기 때문 — `base_view_rate`가 낮아서 생기는 연쇄 효과다.
+  - 이상 네 가지 모두 최종 실행 규모(1,500~2,000명)로 재확인하거나, `base_view_rate`/`direct_add_to_cart_rate_per_session` 등을 조정할지 사용자 확인이 필요한 상태로 남겨뒀다 (직전 `activity_intensity_levels` 사례와 동일한 패턴).
+
+### 5.14 commerce_funnel 파라미터 1차 조정 및 1,750명 실규모 검증 (config_version 1.7)
+
+- **조정 내용**: 5.13절에서 발견한 "경로 A(조회 후 전환)와 경로 B(직접 담기)가 거의 1:1로 나옴" 문제를 해결하기 위해 `base_view_rate`를 0.12→0.20으로 올리고 `direct_add_to_cart_rate_per_session`을 0.02→0.006으로 낮췄다.
+- **1,750명(최종 목표 1,500~2,000명의 중간값) 실규모 검증 결과**:
+  - `fact_order` **1,050건** — 목표(1,000~2,500) **충족**.
+  - `add_to_cart` 중 `view_item` 없이 발생한 비율 **18.24%** — 목표(15~20%) **충족**. 경로 A/B 비율 문제가 해결됨.
+  - 주문당 평균 상품 개수 **1.015**(1,050건 중 2개 이상 묶인 주문 16건) — 여전히 낮지만 400명 규모(1.004)보다는 개선. 묶음 처리 메커니즘 자체는 정상 작동.
+  - H-03 재검증: 참여 상위 50% 그룹 전환율 **48.06%** vs 하위 50% **31.57%**(+16.5%p) — 400명 규모(51.45% vs 35.92%)와 유사한 폭으로 뚜렷하게 재현됨.
+  - `fact_user_event` **179,191건** — 목표 상한(150,000) **초과**. `content_view`(74,477)+`session_start`(58,335)+`content_like`(20,258) 세 이벤트만으로 153,070건(전체의 85.4%)을 차지해, 이번에 조정한 `commerce_funnel`과는 무관하게 **콘텐츠 소비·세션 생성 쪽 파라미터가 원인**이다. 상한 안에 넉넉히 들어오려면 `content_engagement.base_views_per_session_mean`(현재 1.5)을 대략 **0.75 전후로 낮추는 것**을 제안한다(대략 계산: `content_view`+`content_like`+`comment_create` 합계 99,956건을 약 50%로 줄이면 총합이 약 130,000건대로 내려온다). 아직 값은 바꾸지 않았다.
+- **이번에 새로 발견하고 수정한 버그**: 세션이 분석 기간 종료 직전(마지막 25분 이내)에 시작되면 `content_view`/`view_item` 등의 오프셋이 분석 기간을 넘어가는 경계 버그가 1,750명 규모에서 23건 발견됐다(400명 규모에선 세션 수가 적어 우연히 발생하지 않았음). `_clip_to_period()` 헬퍼로 경계를 넘는 시각을 분석 종료 1초 전으로 자르도록 수정하는 과정에서, `_random_instant_after`(5.10절) 때와 **완전히 동일한 패턴의 KST/UTC 타임존 버그**가 다시 발생했다 — 자른 결과값이 KST tzinfo를 가진 `analysis_end_exclusive`에서 파생되어 `.astimezone(UTC)` 없이 그대로 "Z" 접미사로 문자열화되는 문제. 같은 원인이 반복된 만큼, **앞으로 새 타임스탬프 계산 헬퍼를 추가할 때는 항상 반환 직전에 `.astimezone(UTC)`를 명시적으로 거치는 것을 기본 습관으로 삼는다.**
+- **핵심 무결성 전수 재검증(1,750명)**: `purchase.value`/`refund_amount`/외래키(user_id·artist_id·content_id·activity_id·product_id·transaction_id)/`session_number` 순차성/분석 기간 준수 — 전부 위반 0건. 재현성 확인됨.
+
+### 5.15 content_engagement 조정, 시간 유틸 통합, 1,750명 최종 검증 (config_version 1.8)
+
+- **조정 내용**: 5.14절에서 제안한 대로 `content_engagement.base_views_per_session_mean`을 1.5→0.75로 낮췄다.
+- **타임존 버그 재발 방지 — `time_utils.py` 통합**: `_random_instant_after`(5.10절)와 `_clip_to_period`(5.14절)에서 KST/UTC 타임존 버그가 두 번 반복된 것을 계기로, `generate_dimensions.py`(`random_utc_timestamp`), `generate_facts.py`(`random_instant_after`), `generate_events.py`(`clip_to_period`)에 흩어져 있던 시간 계산 헬퍼와 `parse_utc`, `KST`/`UTC` 상수를 `src/generation/time_utils.py` 하나로 모았다. 이 모듈의 모든 함수는 반환 직전에 `.astimezone(UTC)`를 거치도록 통일했고, 각 함수 docstring 맨 앞에 "이 함수는 항상 UTC-aware datetime을 반환해야 한다"를 명시했다. 세 생성 스크립트는 이제 이 모듈에서 함수를 import해서 쓴다(기존 `_` 접두사 이름은 공용 모듈로 옮기며 접두사를 뗐다 — `parse_utc`, `random_utc_timestamp`, `random_instant_after`, `clip_to_period`).
+- **회귀 테스트 추가**: `tests/test_time_utils.py`에 `time_utils.py`의 모든 함수가 실제로 UTC-aware 값만 반환하는지 확인하는 pytest 10건을 추가했다(naive datetime이나 KST가 새어나오면 실패). 1,750명 규모에서 실제로 발견됐던 "분석 기간 종료 직전 경계" 케이스를 그대로 재현하는 회귀 테스트(`test_clip_to_period_exact_bug_regression`)도 포함했다. `requirements.txt`에 `pytest`가 이미 있다고 안내받았으나 실제로는 없어서 추가하고 설치했다. 전체 10건 통과.
+- **1,750명 최종 검증 결과**: `fact_user_event` **129,595건**(목표 80,000~150,000 충족), `fact_order` **1,039건**(목표 1,000~2,500 충족) — 5.14절에서 초과했던 두 지표가 모두 해결됐다. H-03 재검증: 상위 50% 전환율 **49.59%** vs 하위 50% **33.85%**(+15.74%p) — 이전 규모들과 유사한 폭으로 계속 뚜렷하게 재현됨. `purchase.value`/`refund_amount`/외래키 6종/`session_number` 순차성/분석 기간 준수 전부 위반 0건. `dim_*`부터 `fact_order_item`까지 11개 산출 테이블 전체를 처음부터 다시 실행해 바이트 단위로 완전히 동일함을 확인(재현성).
+- **데이터 생성 파이프라인 1차 완성**: 이로써 3개 아티스트, 1,750명 팬 규모로 `dim_artist`~`fact_order_item` 11개 테이블이 전부 목표 범위 안에서 생성되고 핵심 무결성 검증을 통과하는 상태에 도달했다. 다음 단계는 PostgreSQL DDL 작성과 데이터 적재다.
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)
@@ -207,6 +239,12 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - [x] `config/sensitivity_scenario.yaml` 작성 완료
 - [x] 소량 샘플 데이터 생성 스크립트 작성
   - [x] dim_artist, dim_user 생성 스크립트 작성 및 소량(50명) 실행 검증 완료
-  - [ ] 나머지 차원·팩트 테이블(dim_content, dim_product, fact_artist_activity, fact_user_event 등) 생성 스크립트 작성 예정
+  - [x] 나머지 차원 테이블(dim_content, dim_product, dim_activity_phase) 생성 스크립트 작성 완료
+  - [x] fact_artist_activity, bridge_user_artist_follow, fact_message_subscription 생성 스크립트 작성 완료
+  - [x] fact_user_event 1/4(회원·세션+팔로우·구독 파생) 완료
+  - [x] fact_user_event 2/4(소통 노출: artist_post_view/message_open/live_view_start) 완료
+  - [x] fact_user_event 3/4(콘텐츠 소비: content_view/content_like/comment_create) 완료
+  - [x] fact_user_event 4/4(커머스: view_item/add_to_cart/begin_checkout/purchase/refund) 및 fact_order/fact_order_item 생성 완료
+- [x] 데이터 생성 파이프라인 1차 완성 (1,750명 규모, 전체 검증 통과)
 
-**다음에 이어서 할 작업: 나머지 차원·팩트 테이블(dim_content, dim_product, dim_activity_phase, bridge_user_artist_follow, fact_message_subscription, fact_artist_activity, fact_user_event, fact_order, fact_order_item) 생성 스크립트 작성. dim_artist·dim_user와 같은 방식으로 하나씩 늘려가며 검증한다.**
+**다음에 이어서 할 작업: PostgreSQL DDL 작성 및 데이터 적재**

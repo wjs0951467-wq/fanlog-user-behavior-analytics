@@ -8,7 +8,7 @@ import pandas as pd
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from config_loader import load_config
-from generate_dimensions import KST, UTC, _random_utc_timestamp
+from time_utils import KST, random_utc_timestamp, random_instant_after, parse_utc
 
 BRIDGE_USER_ARTIST_FOLLOW_COLUMNS = [
     "follow_id",
@@ -42,27 +42,6 @@ FACT_ARTIST_ACTIVITY_COLUMNS = [
 POST_CONTENT_LINK_RATE = 0.30
 
 
-def _parse_utc(timestamp_str: str) -> datetime:
-    return datetime.strptime(timestamp_str, "%Y-%m-%dT%H:%M:%SZ").replace(tzinfo=UTC)
-
-
-def _random_instant_after(rng: np.random.Generator, start: datetime, end_exclusive: datetime) -> datetime:
-    """start보다 항상 엄격히 늦고(end_exclusive 미만인) 무작위 시각을 UTC로 뽑는다.
-
-    start/end_exclusive는 KST tzinfo를 가질 수 있으므로(예: analysis_start_kst),
-    결과는 반드시 astimezone(UTC)로 정규화한다. 이 변환이 없으면 KST 시각이
-    "Z"(UTC) 접미사로 그대로 문자열화되어 9시간이 밀리는 버그가 생긴다.
-    """
-    span_seconds = int((end_exclusive - start).total_seconds())
-    if span_seconds < 2:
-        # 극히 드문 경계 케이스(윈도우가 1초 이하): 최소 1초 뒤로 보정한다.
-        result = start + timedelta(seconds=1)
-    else:
-        offset_seconds = int(rng.integers(1, span_seconds))
-        result = start + timedelta(seconds=offset_seconds)
-    return result.astimezone(UTC)
-
-
 def generate_bridge_user_artist_follow(
     config: dict, dim_user: pd.DataFrame, dim_artist: pd.DataFrame
 ) -> pd.DataFrame:
@@ -91,7 +70,7 @@ def generate_bridge_user_artist_follow(
     seq = 0
     for _, urow in dim_user.iterrows():
         user_id = urow["user_id"]
-        signup_utc = _parse_utc(urow["signup_timestamp_utc"])
+        signup_utc = parse_utc(urow["signup_timestamp_utc"])
 
         n_follow = int(rng.choice(follow_counts, p=follow_probs))
         n_follow = min(n_follow, len(artist_ids))
@@ -103,11 +82,11 @@ def generate_bridge_user_artist_follow(
         follow_window_start = max(signup_utc, analysis_start_kst)
 
         for artist_id in chosen_artists:
-            followed_utc = _random_instant_after(rng, follow_window_start, analysis_end_exclusive)
+            followed_utc = random_instant_after(rng, follow_window_start, analysis_end_exclusive)
 
             unfollowed_str = ""
             if rng.random() < unfollow_rate:
-                unfollowed_utc = _random_instant_after(rng, followed_utc, analysis_end_exclusive)
+                unfollowed_utc = random_instant_after(rng, followed_utc, analysis_end_exclusive)
                 unfollowed_str = unfollowed_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
 
             seq += 1
@@ -148,18 +127,18 @@ def generate_fact_message_subscription(
         if rng.random() >= conversion_rate:
             continue
 
-        followed_utc = _parse_utc(frow["followed_at_utc"])
+        followed_utc = parse_utc(frow["followed_at_utc"])
         if frow["unfollowed_at_utc"]:
-            window_end = _parse_utc(frow["unfollowed_at_utc"])
+            window_end = parse_utc(frow["unfollowed_at_utc"])
         else:
             window_end = analysis_end_exclusive
 
-        started_utc = _random_instant_after(rng, followed_utc, window_end)
+        started_utc = random_instant_after(rng, followed_utc, window_end)
 
         ended_str = ""
         cancel_reason = ""
         if rng.random() < cancel_rate:
-            ended_utc = _random_instant_after(rng, started_utc, analysis_end_exclusive)
+            ended_utc = random_instant_after(rng, started_utc, analysis_end_exclusive)
             ended_str = ended_utc.strftime("%Y-%m-%dT%H:%M:%SZ")
             cancel_reason = (
                 "user_cancel" if rng.random() < user_cancel_share else "expired_no_renewal"
@@ -234,7 +213,7 @@ def generate_fact_artist_activity(
                 actual_count = int(rng.poisson(expected_count))
 
                 for _ in range(actual_count):
-                    activity_utc = _random_utc_timestamp(rng, start_kst, end_kst_exclusive)
+                    activity_utc = random_utc_timestamp(rng, start_kst, end_kst_exclusive)
 
                     content_id = ""
                     if (
