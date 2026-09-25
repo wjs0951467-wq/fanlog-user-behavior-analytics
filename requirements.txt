@@ -6,3 +6,11 @@ pytest
 SQLAlchemy
 psycopg[binary]
 python-dotenv
+scipy
+matplotlib
+seaborn
+jupyter
+ipykernel
+nbformat
+nbclient
+jinja2
