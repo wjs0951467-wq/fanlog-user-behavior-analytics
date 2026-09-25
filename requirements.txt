@@ -3,3 +3,6 @@ numpy
 pyyaml
 faker
 pytest
+SQLAlchemy
+psycopg[binary]
+python-dotenv
