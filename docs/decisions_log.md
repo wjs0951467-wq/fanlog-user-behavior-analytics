@@ -115,6 +115,12 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - `content_view` 이벤트에 `content_type`을 직접 저장하지 않고 `dim_content` 조인으로 파악하기로 결정했다. `artist_id`와 동일한 원칙을 적용한 것이다(이벤트 자체의 속성이 아니라 콘텐츠 차원 테이블의 고정 속성이므로 중복 저장하지 않는다).
 - `content_unlike`, 댓글 삭제 이벤트는 계속 MVP 제외를 유지한다(분석 목적상 필요성이 낮다).
 
+### 5.9 data_generation.yaml 1차 검토 반영 (config_version 1.1)
+
+- ChatGPT 검토를 거쳐 활동 강도(high/medium/low)에 실제 빈도 수치를 매핑하고, 활동 단계 배정 방식(겹침·공백 없이 90일을 정확히 채우는 규칙)을 명시했다.
+- communication_effect 비교 시나리오는 애초 계획대로 `config/sensitivity_scenario.yaml`로 분리했다 (PRD 17절 리포지토리 구조와의 정합성 회복).
+- 샘플 데이터 추출 방식을 "사용자 기준 선정 후 관련 행 추출"로 명확히 하여 외래키 무결성이 깨지지 않도록 했다.
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)
