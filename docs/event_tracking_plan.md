@@ -576,3 +576,62 @@ DAU·WAU·이탈 위험·휴면·재활성 계산에는 다음 이벤트를 핵�
 | ET-DQ-22 | `artist_post_view`, `message_open`, `content_view`, `content_like`, `comment_create`의 `content_id` 또는 `activity_id`가 각각 `dim_content` 또는 `fact_artist_activity`에 존재하지 않는 경우 | 0건 |
 | ET-DQ-23 | `live_view_start`의 `watch_seconds`가 60 미만인 경우 | 0건 |
 | ET-DQ-24 | `live_view_start`의 `watch_seconds`가 음수이거나 비정상적으로 큰 값(예: 24시간 초과)인 경우 | 0건 |
+
+### 11.4 커머스
+
+이 절의 공통 가정은 다음과 같다.
+
+- 통화는 KRW 단일 통화로 고정한다(`currency` 파라미터 값은 항상 `"KRW"`).
+- `add_to_cart` 이벤트 1건은 해당 상품 1개를 장바구니에 담는 행동을 의미한다(수량은 `fact_order_item`에서 별도 관리한다).
+
+#### `view_item`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 상품 상세 화면이 정상적으로 열린 시점 |
+| `parameters` | `product_id`, `currency`(`"KRW"`), `value`(상품 현재 가격) |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `add_to_cart`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 상품을 장바구니에 추가한 시점. `view_item` 없이 바로 발생할 수 있다(열린 퍼널, 9.2절 참고) |
+| `parameters` | `product_id`, `currency`(`"KRW"`), `value`(담은 시점의 상품 가격) |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `begin_checkout`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 결제 절차를 시작한 시점 |
+| `parameters` | `transaction_id`(신규 발급), `currency`(`"KRW"`), `value`(장바구니 총액) |
+| 연동 규칙 | 이 시점에 `fact_order`에 `status='pending'`인 새 행을 생성하고, `fact_order_item`에 장바구니에 담긴 상품들을 기록한다 |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `purchase`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 결제가 성공적으로 완료된 시점 |
+| `parameters` | `transaction_id`(`begin_checkout`과 동일한 값), `currency`(`"KRW"`), `value`(최종 결제 금액) |
+| 연동 규칙 | 해당 `transaction_id`의 `fact_order.status`를 `completed`로 갱신한다. `value`는 `fact_order_item` 금액 합계와 일치해야 한다 |
+| 비고 | 핵심 활동(8.1)에 포함된다. 하나의 `transaction_id`에 `purchase`는 최대 1건만 존재한다(9.3절 구매 무결성 규칙과 동일) |
+
+#### `refund`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 환불 처리가 완료된 시점. 관련 `purchase` 이후에만 발생할 수 있다 |
+| `parameters` | `transaction_id`(환불 대상 주문), `value`(환불 금액, 전액 또는 부분) |
+| 연동 규칙 | `fact_order.status`를 `refunded`(전액) 또는 `partially_refunded`(부분)로 갱신하고 `fact_order.refund_amount`에 반영한다. 환불 금액은 원 주문 금액을 초과할 수 없다 |
+| 비고 | 핵심 활동(8.1)에서 제외된다(8.1절과 동일) |
+
+### 11.4.1 추가 품질 규칙
+
+| 규칙 ID | 검증 내용 | 기대 결과 |
+| --- | --- | --- |
+| ET-DQ-25 | `purchase.parameters.value`가 `fact_order_item` 금액 합계와 불일치하는 경우 | 0건 |
+| ET-DQ-26 | `refund.parameters.value`가 원 주문 금액을 초과하는 경우 | 0건 |
+| ET-DQ-27 | `fact_order.status`가 `completed`인데 대응하는 `purchase` 이벤트가 없는 경우 | 0건 |
+| ET-DQ-28 | `fact_order.status`가 `pending`인 채로 분석 기간이 끝난 경우 | 오류 아님 — "미완료 결제"로 정상 분류(닫힌 퍼널 미충족과 동일한 개념) |
