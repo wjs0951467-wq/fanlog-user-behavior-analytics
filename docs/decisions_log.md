@@ -121,6 +121,13 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - communication_effect 비교 시나리오는 애초 계획대로 `config/sensitivity_scenario.yaml`로 분리했다 (PRD 17절 리포지토리 구조와의 정합성 회복).
 - 샘플 데이터 추출 방식을 "사용자 기준 선정 후 관련 행 추출"로 명확히 하여 외래키 무결성이 깨지지 않도록 했다.
 
+### 5.10 기존 가입자의 sign_up 이벤트 미생성 결정 (fact_user_event 1/4 단계)
+
+- **충돌 발견**: `fact_user_event` 생성 중, `dim_user`의 기존 가입자(분석 시작일 이전 가입, 약 70%)는 `signup_timestamp_utc`가 분석 기간보다 최대 2년 앞설 수 있는데, `sign_up.event_timestamp_utc`는 이 값과 동일해야 한다는 규칙(11.1절)과 `event_tracking_plan.md`의 `ET-DQ-14`("분석 기간을 벗어난 이벤트·활동 0건") 규칙이 서로 충돌했다.
+- **결정**: ET-DQ-14에 예외를 만들지 않고 그대로 지키는 쪽을 택했다. 실제 분석 도구(GA4 등)가 트래킹 시작 이전 가입자의 가입 이벤트를 소급 기록하지 않는 것과 동일한 원칙을 적용해, **기존 가입자는 `sign_up` 이벤트를 생성하지 않는다.** 신규 가입자(분석 기간 중 가입, 약 30%)만 기존 로직대로 `sign_up`을 생성한다. 가입 시각 정보 자체는 `dim_user.signup_timestamp_utc`에 그대로 남아있으므로 코호트 분석 등에는 지장이 없다.
+- **연쇄 조정**: `session_start`도 신규 가입자는 세션 1이 `sign_up`과 동일 시각이어야 하지만, 기존 가입자는 강제 시작 세션이 없고 분석 기간 중 처음 관측된 세션이 자연스럽게 `session_number=1`이 된다. `bridge_user_artist_follow`/`fact_message_subscription`의 시작 시각 하한도 `signup_timestamp_utc`가 아니라 `max(signup_timestamp_utc, analysis_start_date)`로 변경해 같은 원칙을 적용했다.
+- **부수적으로 발견한 버그**: 위 하한 변경 과정에서 `_random_instant_after` 헬퍼(2턴 전 `bridge_user_artist_follow` 작업 때 추가)가 결과를 UTC로 정규화하지 않는 버그가 드러났다. 시작 시각이 KST tzinfo를 가지는 경우(기존 가입자의 `analysis_start_kst`) KST 벽시계 시각이 "Z"(UTC) 접미사로 그대로 문자열화되어 9시간이 밀리는 문제였다. 이전에는 시작 시각이 항상 `signup_timestamp_utc`(이미 UTC)였기 때문에 잠복해 있다가 이번에 노출되었다. `astimezone(UTC)` 정규화를 추가해 수정했다.
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)

@@ -442,7 +442,7 @@ DAU·WAU·이탈 위험·휴면·재활성 계산에는 다음 이벤트를 핵�
 | `session_id` | 필수. 가입 절차가 진행된 첫 세션의 `session_id`와 동일하다 |
 | `parameters.method` | 필수, 범주형: `email`, `google`, `apple` 중 하나 |
 | 예시 `parameters` | `{"method": "google"}` |
-| 비고 | `event_timestamp_utc`는 `dim_user`의 가입 시각과 동일해야 한다. 재가입·탈퇴 후 재가입 시나리오는 MVP에서 다루지 않는다 |
+| 비고 | `event_timestamp_utc`는 `dim_user`의 가입 시각과 동일해야 한다. 재가입·탈퇴 후 재가입 시나리오는 MVP에서 다루지 않는다. 분석 기간 시작일 이전에 가입한 팬(기존 가입자)에 대해서는 sign_up 이벤트를 생성하지 않는다. 실제 분석 도구에서 트래킹 시작 이전 가입자의 가입 이벤트가 소급 기록되지 않는 것과 동일한 원칙이다. 이 경우 가입 시각 정보는 dim_user에서만 확인한다 |
 
 #### `session_start`
 

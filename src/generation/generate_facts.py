@@ -47,13 +47,20 @@ def _parse_utc(timestamp_str: str) -> datetime:
 
 
 def _random_instant_after(rng: np.random.Generator, start: datetime, end_exclusive: datetime) -> datetime:
-    """start보다 항상 엄격히 늦고(end_exclusive 미만인) 무작위 시각을 뽑는다."""
+    """start보다 항상 엄격히 늦고(end_exclusive 미만인) 무작위 시각을 UTC로 뽑는다.
+
+    start/end_exclusive는 KST tzinfo를 가질 수 있으므로(예: analysis_start_kst),
+    결과는 반드시 astimezone(UTC)로 정규화한다. 이 변환이 없으면 KST 시각이
+    "Z"(UTC) 접미사로 그대로 문자열화되어 9시간이 밀리는 버그가 생긴다.
+    """
     span_seconds = int((end_exclusive - start).total_seconds())
     if span_seconds < 2:
         # 극히 드문 경계 케이스(윈도우가 1초 이하): 최소 1초 뒤로 보정한다.
-        return start + timedelta(seconds=1)
-    offset_seconds = int(rng.integers(1, span_seconds))
-    return start + timedelta(seconds=offset_seconds)
+        result = start + timedelta(seconds=1)
+    else:
+        offset_seconds = int(rng.integers(1, span_seconds))
+        result = start + timedelta(seconds=offset_seconds)
+    return result.astimezone(UTC)
 
 
 def generate_bridge_user_artist_follow(
@@ -90,8 +97,13 @@ def generate_bridge_user_artist_follow(
         n_follow = min(n_follow, len(artist_ids))
         chosen_artists = rng.choice(artist_ids, size=n_follow, replace=False, p=artist_probs)
 
+        # 팔로우는 가입 이후 언제든 가능하지만, 분석 기간 이전에 가입한 기존 팬이라도
+        # 우리가 실제로 관측하는 이벤트는 분석 기간 시작일부터다 (ET-DQ-14: 분석 기간을
+        # 벗어난 이벤트 0건 원칙과 정합시키기 위한 하한 보정).
+        follow_window_start = max(signup_utc, analysis_start_kst)
+
         for artist_id in chosen_artists:
-            followed_utc = _random_instant_after(rng, signup_utc, analysis_end_exclusive)
+            followed_utc = _random_instant_after(rng, follow_window_start, analysis_end_exclusive)
 
             unfollowed_str = ""
             if rng.random() < unfollow_rate:
