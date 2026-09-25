@@ -254,5 +254,6 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - [x] PostgreSQL DDL 작성 및 데이터 적재 완료 (11개 테이블 + meta_generation_run, 행 수 검증 통과)
 - [x] SQL 품질검사 1/5 (기본키·외래키·결측) 작성 및 실행 완료 (`sql/quality_checks/001_keys_and_referential_integrity.sql`, DQ-01~03·ET-DQ-01~06 총 9개 규칙, 1,750명 실규모 데이터 전수 검증 — 위반 0건)
 - [x] SQL 품질검사 2/5 (시간순서) 작성 및 실행 완료 (`sql/quality_checks/002_temporal_order.sql`, DQ-04~06·ET-DQ-07,09,11,14,16~19,21 규칙, 1,750명 실규모 데이터 전수 검증 — 위반 0건)
+- [x] SQL 품질검사 3/5 (허용값·카테고리) 작성 및 실행 완료 (`sql/quality_checks/003_allowed_values.sql`, ET-DQ-03,04,15,20 + 추가검사 A·B(product_type/order.status), 1,750명 실규모 데이터 전수 검증 — 위반 0건. 전부 CHECK 제약이 이미 막고 있어 예상대로 0건, 문서화·감사 가능성(NFR-10) 목적)
 
-**다음에 이어서 할 작업: SQL 데이터 품질검사 쿼리 3/5 이후 작성 (남은 DQ-07~10, ET-DQ-08,10,12,13,15,20,22~28)**
+**다음에 이어서 할 작업: SQL 데이터 품질검사 쿼리 4/5 이후 작성 (남은 DQ-07~10, ET-DQ-08,10,12,13,22~28)**
