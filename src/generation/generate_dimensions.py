@@ -2,7 +2,7 @@ import argparse
 import os
 import random
 import sys
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 from zoneinfo import ZoneInfo
 
 import numpy as np
@@ -32,6 +32,26 @@ DIM_ACTIVITY_PHASE_COLUMNS = [
     "start_date_kst",
     "end_date_kst",
 ]
+DIM_CONTENT_COLUMNS = [
+    "content_id",
+    "artist_id",
+    "content_type",
+    "title",
+    "published_timestamp_utc",
+    "published_date_kst",
+]
+DIM_PRODUCT_COLUMNS = [
+    "product_id",
+    "artist_id",
+    "product_name",
+    "product_type",
+    "price",
+    "release_timestamp_utc",
+    "release_date_kst",
+]
+
+# 가정: 활동 강도에 비례한 콘텐츠 배분 가중치
+ACTIVITY_INTENSITY_CONTENT_WEIGHT = {"high": 1.5, "medium": 1.0, "low": 0.7}
 
 
 def generate_dim_artist(config: dict) -> pd.DataFrame:
@@ -197,6 +217,152 @@ def generate_dim_activity_phase(config: dict, dim_artist: pd.DataFrame) -> pd.Da
     return pd.DataFrame(rows, columns=DIM_ACTIVITY_PHASE_COLUMNS)
 
 
+def _split_by_weights(total: int, weights) -> list:
+    """total을 weights 비율로 나누고, 반올림 오차는 마지막 항목에서 보정한다."""
+    weights = np.asarray(weights, dtype=float)
+    raw = total * weights / weights.sum()
+    counts = [round(v) for v in raw[:-1]]
+    counts.append(total - sum(counts))
+    return counts
+
+
+def generate_dim_content(
+    config: dict, dim_artist: pd.DataFrame, dim_activity_phase: pd.DataFrame
+) -> pd.DataFrame:
+    seed = config["meta"]["random_seed"]
+    rng = np.random.default_rng(seed)
+
+    content_scale = config["scale"]["content"]
+    total_content = int(rng.integers(content_scale["min"], content_scale["max"] + 1))
+
+    artist_ids = list(dim_artist["artist_id"])
+    artist_intensity = {
+        a["artist_id"]: a["activity_intensity"] for a in config["artists"]
+    }
+    artist_name_lookup = dict(zip(dim_artist["artist_id"], dim_artist["artist_name"]))
+
+    # 아티스트별 콘텐츠 개수를 activity_intensity 가중치로 배분
+    artist_weights = [
+        ACTIVITY_INTENSITY_CONTENT_WEIGHT[artist_intensity[aid]] for aid in artist_ids
+    ]
+    artist_content_counts = dict(zip(artist_ids, _split_by_weights(total_content, artist_weights)))
+
+    content_type_dist = config["content_types"]["distribution"]
+    type_names = list(content_type_dist.keys())
+    type_probs = list(content_type_dist.values())
+    phase_multiplier = config["activity_phases"]["phase_multiplier"]
+
+    rows = []
+    for aid in artist_ids:
+        artist_phases = dim_activity_phase[dim_activity_phase["artist_id"] == aid].reset_index(drop=True)
+
+        # 구간 배분 가중치 = 구간 일수 x phase_multiplier(해당 phase_type)
+        phase_weights = []
+        for _, prow in artist_phases.iterrows():
+            start = date.fromisoformat(prow["start_date_kst"])
+            end = date.fromisoformat(prow["end_date_kst"])
+            days = (end - start).days + 1
+            phase_weights.append(days * phase_multiplier[prow["phase_type"]])
+
+        phase_counts = _split_by_weights(artist_content_counts[aid], phase_weights)
+
+        seq = 0
+        for (_, prow), phase_count in zip(artist_phases.iterrows(), phase_counts):
+            if phase_count <= 0:
+                continue
+
+            start_date = date.fromisoformat(prow["start_date_kst"])
+            end_date = date.fromisoformat(prow["end_date_kst"])
+            start_kst = datetime(start_date.year, start_date.month, start_date.day, tzinfo=KST)
+            # 종료일을 포함(inclusive)하기 위해 다음날 00:00을 배타적 상한으로 사용
+            end_kst_exclusive = datetime(end_date.year, end_date.month, end_date.day, tzinfo=KST) + timedelta(days=1)
+
+            phase_content_types = rng.choice(type_names, size=phase_count, p=type_probs)
+
+            for i in range(phase_count):
+                seq += 1
+                published_utc = _random_utc_timestamp(rng, start_kst, end_kst_exclusive)
+                content_type = phase_content_types[i]
+                rows.append(
+                    {
+                        "content_id": f"content_{aid}_{seq:04d}",
+                        "artist_id": aid,
+                        "content_type": content_type,
+                        "title": f"[{artist_name_lookup[aid]}] {content_type} #{seq:04d}",
+                        "published_timestamp_utc": published_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "published_date_kst": published_utc.astimezone(KST).date().isoformat(),
+                    }
+                )
+
+    return pd.DataFrame(rows, columns=DIM_CONTENT_COLUMNS)
+
+
+def generate_dim_product(config: dict, dim_artist: pd.DataFrame) -> pd.DataFrame:
+    seed = config["meta"]["random_seed"]
+    rng = np.random.default_rng(seed)
+
+    product_scale = config["scale"]["products"]
+    total_products = int(rng.integers(product_scale["min"], product_scale["max"] + 1))
+
+    artist_ids = list(dim_artist["artist_id"])
+    artist_name_lookup = dict(zip(dim_artist["artist_id"], dim_artist["artist_name"]))
+
+    # 아티스트별로 균등 배분, 반올림(나머지) 오차는 마지막 아티스트에서 보정
+    base_count = total_products // len(artist_ids)
+    artist_product_counts = {aid: base_count for aid in artist_ids}
+    artist_product_counts[artist_ids[-1]] = total_products - base_count * (len(artist_ids) - 1)
+
+    product_type_dist = config["commerce"]["product_types"]["distribution"]
+    type_names = list(product_type_dist.keys())
+    type_probs = list(product_type_dist.values())
+    price_range = config["commerce"]["price_range_krw"]
+
+    analysis_start_kst = datetime.strptime(
+        config["meta"]["analysis_start_date"], "%Y-%m-%d"
+    ).replace(tzinfo=KST)
+    analysis_period_days = config["meta"]["analysis_period_days"]
+
+    # 가정: 기존 상품은 분석 시작일 이전 최근 1년 이내에 이미 출시되어 있었다고 가정.
+    # 전체 상품의 약 20%는 분석 기간(90일) 중에 신규 출시되는 것으로 한다.
+    existing_window_start = analysis_start_kst - timedelta(days=365)
+    existing_window_end = analysis_start_kst
+    new_window_start = analysis_start_kst
+    new_window_end = analysis_start_kst + timedelta(days=analysis_period_days)
+
+    rows = []
+    for aid in artist_ids:
+        count = artist_product_counts[aid]
+        product_types = rng.choice(type_names, size=count, p=type_probs)
+        is_new = rng.random(count) < 0.20
+
+        for i in range(count):
+            seq = i + 1
+            product_type = product_types[i]
+
+            low, high = price_range[product_type]
+            raw_price = rng.uniform(low, high)
+            price = int(round(raw_price / 1000)) * 1000
+
+            if is_new[i]:
+                release_utc = _random_utc_timestamp(rng, new_window_start, new_window_end)
+            else:
+                release_utc = _random_utc_timestamp(rng, existing_window_start, existing_window_end)
+
+            rows.append(
+                {
+                    "product_id": f"product_{aid}_{seq:03d}",
+                    "artist_id": aid,
+                    "product_name": f"[{artist_name_lookup[aid]}] {product_type} #{seq:03d}",
+                    "product_type": product_type,
+                    "price": price,
+                    "release_timestamp_utc": release_utc.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                    "release_date_kst": release_utc.astimezone(KST).date().isoformat(),
+                }
+            )
+
+    return pd.DataFrame(rows, columns=DIM_PRODUCT_COLUMNS)
+
+
 def main():
     parser = argparse.ArgumentParser(description="dim_artist, dim_user 생성")
     parser.add_argument(
@@ -227,18 +393,26 @@ def main():
     dim_artist = generate_dim_artist(config)
     dim_user = generate_dim_user(config, args.user_count)
     dim_activity_phase = generate_dim_activity_phase(config, dim_artist)
+    dim_content = generate_dim_content(config, dim_artist, dim_activity_phase)
+    dim_product = generate_dim_product(config, dim_artist)
 
     dim_artist_path = os.path.join(args.output_dir, "dim_artist.csv")
     dim_user_path = os.path.join(args.output_dir, "dim_user.csv")
     dim_activity_phase_path = os.path.join(args.output_dir, "dim_activity_phase.csv")
+    dim_content_path = os.path.join(args.output_dir, "dim_content.csv")
+    dim_product_path = os.path.join(args.output_dir, "dim_product.csv")
 
     dim_artist.to_csv(dim_artist_path, index=False)
     dim_user.to_csv(dim_user_path, index=False)
     dim_activity_phase.to_csv(dim_activity_phase_path, index=False)
+    dim_content.to_csv(dim_content_path, index=False)
+    dim_product.to_csv(dim_product_path, index=False)
 
     print(f"dim_artist: {len(dim_artist)}행 -> {dim_artist_path}")
     print(f"dim_user: {len(dim_user)}행 -> {dim_user_path}")
     print(f"dim_activity_phase: {len(dim_activity_phase)}행 -> {dim_activity_phase_path}")
+    print(f"dim_content: {len(dim_content)}행 -> {dim_content_path}")
+    print(f"dim_product: {len(dim_product)}행 -> {dim_product_path}")
 
 
 if __name__ == "__main__":
