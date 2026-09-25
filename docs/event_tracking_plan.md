@@ -214,12 +214,12 @@ FANLOG는 아티스트가 소통을 제공한 행동과 팬이 실제로 반응�
 
 ### 5.2 팬 행동 이벤트
 
-MVP에서는 PRD v1.1에서 확정한 다음 17개 이벤트만 사용한다.
+MVP에서는 PRD v1.3에서 확정한 다음 18개 이벤트만 사용한다.
 
 | 영역 | 이벤트 | 저장 테이블 |
 | --- | --- | --- |
 | 회원·세션 | `sign_up`, `session_start` | `fact_user_event` |
-| 아티스트 탐색 | `artist_view`, `artist_follow` | `fact_user_event` |
+| 아티스트 탐색·관계 | `artist_view`, `artist_follow`, `artist_unfollow` | `fact_user_event` |
 | 메시지 구독 | `message_subscription_start`, `message_subscription_cancel` | `fact_user_event` |
 | 소통 콘텐츠 이용 | `artist_post_view`, `message_open`, `live_view_start` | `fact_user_event` |
 | 공식 콘텐츠 이용·참여 | `content_view`, `content_like`, `comment_create` | `fact_user_event` |
@@ -228,7 +228,6 @@ MVP에서는 PRD v1.1에서 확정한 다음 17개 이벤트만 사용한다.
 다음 이벤트는 MVP에 포함하지 않는다.
 
 - `login`
-- `artist_unfollow`
 - `content_unlike`
 - `message_reply_send`
 - `live_view_complete`
@@ -345,6 +344,7 @@ DAU·WAU·이탈 위험·휴면·재활성 계산에는 다음 이벤트를 핵�
 | `sign_up` | 가입 완료를 나타내며 지속적인 서비스 활동은 아님 |
 | `session_start` | 단순 접속이므로 핵심 행동으로 보지 않음 |
 | `artist_view` | 탐색 행동이지만 핵심 참여·소비 행동에서는 제외 |
+| `artist_unfollow` | 팔로우 해제 행동으로 활성 상태를 연장하지 않음 |
 | `message_subscription_cancel` | 구독 해지 행동으로 활성 상태를 연장하지 않음 |
 | `refund` | 구매 이후의 취소·사후 처리 행동으로 활성 상태를 연장하지 않음 |
 
@@ -427,3 +427,92 @@ DAU·WAU·이탈 위험·휴면·재활성 계산에는 다음 이벤트를 핵�
 4. 중복 이벤트 방지 기준
 5. 이벤트와 핵심 지표의 연결 관계
 6. 이벤트 생성 예시
+
+## 11. 이벤트별 상세 명세
+
+이벤트 공통 필드는 6절(팬 행동)과 7절(아티스트 활동) 기준을 그대로 따르며, 여기서는 이벤트별로 달라지는 발생 조건과 `parameters` 값만 정의한다.
+
+### 11.1 회원·세션
+
+#### `sign_up`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 회원가입 절차를 완료한 시점. 팬 1명당 정확히 1건만 발생한다 |
+| `session_id` | 필수. 가입 절차가 진행된 첫 세션의 `session_id`와 동일하다 |
+| `parameters.method` | 필수, 범주형: `email`, `google`, `apple` 중 하나 |
+| 예시 `parameters` | `{"method": "google"}` |
+| 비고 | `event_timestamp_utc`는 `dim_user`의 가입 시각과 동일해야 한다. 재가입·탈퇴 후 재가입 시나리오는 MVP에서 다루지 않는다 |
+
+#### `session_start`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬의 직전 활동으로부터 30분 이상 경과한 뒤 새로 접속했을 때, 또는 가입 직후 첫 접속일 때 발생한다 |
+| `session_id` | 필수. 이 이벤트에서 새로운 `session_id`가 발급되며, 같은 세션 내 후속 이벤트는 이 값을 공유한다 |
+| `parameters.session_number` | 필수, 정수: 해당 팬의 가입 이후 누적 세션 순번(1부터 시작, 세션마다 1씩 증가) |
+| 예시 `parameters` | `{"session_number": 12}` |
+| 비고 | 팬의 첫 세션(`session_number=1`)은 `sign_up`보다 먼저 발생한다. 즉 접속 → 세션 시작 → 그 세션 안에서 가입 완료 순서다 |
+
+### 11.1.1 추가 품질 규칙
+
+위 두 이벤트를 구체화하면서 다음 규칙을 9절의 공통 데이터 품질 규칙에 추가한다.
+
+| 규칙 ID | 검증 내용 | 기대 결과 |
+| --- | --- | --- |
+| ET-DQ-16 | 동일 `user_id`의 `session_number`가 1부터 중복 없이 순차 증가하는지 | 위반 0건 |
+| ET-DQ-17 | `sign_up`이 팬당 2건 이상 존재하는지 | 0건 |
+
+### 11.2 아티스트 탐색·구독
+
+#### `artist_view`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 아티스트 상세 화면이 정상적으로 열린 시점 |
+| 추가 `parameters` | 없음 (공통 필드의 `artist_id`만 사용) |
+| 비고 | 탐색 행동이므로 핵심 활동 계산(8.1)에서 제외한다 |
+
+#### `artist_follow`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 아티스트 팔로우를 완료한 시점. 언팔로우 후 동일 아티스트를 다시 팔로우하는 것도 허용하며, 그때마다 새 이벤트가 발생한다 |
+| 추가 `parameters` | 없음 |
+| 연동 규칙 | `bridge_user_artist_follow`에 새 행을 생성한다(`followed_at` = 이벤트 시각, `unfollowed_at` = null). 동일 팬·아티스트 조합에 이미 종료되지 않은(`unfollowed_at`이 null인) 행이 있으면 오류다 |
+
+#### `artist_unfollow`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 팔로우를 해제한 시점. 해당 팬이 그 아티스트를 현재 팔로우 중일 때만 발생할 수 있다 |
+| 추가 `parameters` | 없음 |
+| 연동 규칙 | `bridge_user_artist_follow`에서 해당 팬·아티스트의 활성(`unfollowed_at`이 null인) 행을 찾아 `unfollowed_at`을 이 이벤트의 시각으로 채운다 |
+| 비고 | 핵심 활동 계산(8.1)에서 제외한다 |
+
+#### `message_subscription_start`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 유료 메시지 구독 결제가 완료된 시점 |
+| `parameters.plan_type` | 필수. MVP에서는 `monthly` 단일 값만 사용한다 |
+| 예시 `parameters` | `{"plan_type": "monthly"}` |
+| 연동 규칙 | `fact_message_subscription`에 새 행을 생성한다(시작일 = 이벤트 시각) |
+
+#### `message_subscription_cancel`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 다음 두 경우 모두 이 이벤트로 기록한다: (1) 팬이 능동적으로 해지 버튼을 눌러 구독을 취소한 경우, (2) 구독 갱신일에 결제가 이루어지지 않아 자동으로 만료된 경우 |
+| `parameters.cancel_reason_category` | 필수, 범주형: `user_cancel`(능동 해지), `expired_no_renewal`(자동 만료) |
+| 예시 `parameters` | `{"cancel_reason_category": "expired_no_renewal"}` |
+| 연동 규칙 | `fact_message_subscription`의 해당 행에 종료일과 종료 사유를 반영한다 |
+
+### 11.2.1 추가 품질 규칙
+
+| 규칙 ID | 검증 내용 | 기대 결과 |
+| --- | --- | --- |
+| ET-DQ-18 | 활성 팔로우 상태가 아닌 팬·아티스트 조합에서 발생한 `artist_unfollow` | 0건 |
+| ET-DQ-19 | 동일 팬·아티스트 조합에서 종료되지 않은 활성 팔로우 행이 2개 이상 동시 존재 | 0건 |
+| ET-DQ-20 | 허용 목록에 없는 `message_subscription_cancel.cancel_reason_category` | 0건 |
+| ET-DQ-21 | 활성 구독이 없는 상태에서 발생한 `message_subscription_cancel` | 0건 |

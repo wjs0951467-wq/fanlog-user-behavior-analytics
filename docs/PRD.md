@@ -4,7 +4,7 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 버전 | v1.2 |
+| 문서 버전 | v1.3 |
 | 문서 상태 | MVP 구현 기준안 |
 | 작성자 | 전예진 |
 | 작성일 | 2026-09-23 |
@@ -22,7 +22,7 @@
 | v1.0 | 2026-09-23 | 전체 서비스 분석을 가정한 최초 PRD 작성 |
 | v1.1 | 2026-09-23 | 1인 프로젝트의 완주 가능성을 고려해 데이터 규모, 분석 범위, 대시보드 및 기술 요구사항을 MVP 수준으로 축소 |
 | v1.2 | 2026-09-25 | `dim_content`에 `artist_id` 외래키와 콘텐츠 유형(`content_type`) 값 목록을 추가하여 콘텐츠-아티스트 연결 기준과 유형별 분석 근거를 구체화 |
-
+| v1.3 | 2026-09-25 | `artist_unfollow` 이벤트를 MVP 범위에 재포함하고, 팔로우 기간의 무결성 규칙을 구체화 |
 ---
 
 ## 0. 요약
@@ -392,8 +392,8 @@
 | --- | --- | --- | --- |
 | `sign_up` | 권장형 | 회원가입 완료 | `method` |
 | `session_start` | 자동형 | 새 세션 시작 | `session_number` |
-| `artist_view` | 맞춤 | 아티스트 상세 조회 | `artist_id` |
 | `artist_follow` | 맞춤 | 아티스트 팔로우 완료 | `artist_id` |
+| `artist_unfollow` | 맞춤 | 아티스트 팔로우 해제 완료 | `artist_id` |
 | `message_subscription_start` | 맞춤 | 유료 메시지 구독 활성 | `artist_id`, `plan_type` |
 | `message_subscription_cancel` | 맞춤 | 메시지 구독 취소·만료 | `cancel_reason_category` |
 | `artist_post_view` | 맞춤 | 아티스트 게시글 상세 조회 | `activity_id`, `artist_id` |
@@ -471,6 +471,7 @@ flowchart TD
 - `dim_content.artist_id`는 필수값이며 `dim_artist`에 존재해야 한다.
 - `content_view`, `content_like`, `comment_create`의 `artist_id`는 연결된 `dim_content.artist_id`와 일치해야 한다.
 - `dim_content.content_type`은 6.1.1에서 정의한 5개 값 중 하나여야 한다.
+- 동일 `user_id`·`artist_id` 조합에서 언팔로우되지 않은 활성 팔로우 기간은 동시에 하나만 존재해야 한다.
 
 ---
 
