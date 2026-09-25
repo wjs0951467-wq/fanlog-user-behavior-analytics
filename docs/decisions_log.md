@@ -128,6 +128,13 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - **연쇄 조정**: `session_start`도 신규 가입자는 세션 1이 `sign_up`과 동일 시각이어야 하지만, 기존 가입자는 강제 시작 세션이 없고 분석 기간 중 처음 관측된 세션이 자연스럽게 `session_number=1`이 된다. `bridge_user_artist_follow`/`fact_message_subscription`의 시작 시각 하한도 `signup_timestamp_utc`가 아니라 `max(signup_timestamp_utc, analysis_start_date)`로 변경해 같은 원칙을 적용했다.
 - **부수적으로 발견한 버그**: 위 하한 변경 과정에서 `_random_instant_after` 헬퍼(2턴 전 `bridge_user_artist_follow` 작업 때 추가)가 결과를 UTC로 정규화하지 않는 버그가 드러났다. 시작 시각이 KST tzinfo를 가지는 경우(기존 가입자의 `analysis_start_kst`) KST 벽시계 시각이 "Z"(UTC) 접미사로 그대로 문자열화되어 9시간이 밀리는 문제였다. 이전에는 시작 시각이 항상 `signup_timestamp_utc`(이미 UTC)였기 때문에 잠복해 있다가 이번에 노출되었다. `astimezone(UTC)` 정규화를 추가해 수정했다.
 
+### 5.11 소통 노출 모델 (exposure_model) — 프로젝트 핵심 메커니즘
+
+- **왜 session_start를 소통 이벤트와 연결해야 했는가**: 이 프로젝트의 핵심 분석 질문은 "아티스트 소통이 줄면 팬 활동도 줄어드는가?"(3절)다. 이 관계가 데이터에 실제로 심어져 있으려면, 소통 노출(`artist_post_view`/`message_open`/`live_view_start`)이 팬의 세션(재방문)을 유도하는 구조가 있어야 한다. 그래서 1/4 단계에서 만든 "30분 이상 공백 뒤 이벤트가 오면 즉석에서 새 세션을 만든다"는 세션 배정 로직을 그대로 재사용해, 노출 이벤트가 비활동 팬을 다시 세션으로 끌어들이는("알림 보고 접속") 메커니즘을 구현했다. `fact_user_event`를 부분 추가가 아니라 매번 전체를 다시 생성하는 이유도 이 때문이다 — 노출 이벤트가 중간에 끼어들면 이후 `session_number` 전체가 바뀔 수 있다.
+- **exposure_model 파라미터 요지** (`config/data_generation.yaml`): `base_exposure_rate=0.08`(활동 1건당 대상 팬의 기본 반응 확률), `propensity_multiplier_range=[0.7, 1.3]`(팬별 `engagement_propensity`(Beta(2,6))를 이 범위로 선형 변환해 개인차 반영), `phase_effect_scale=0.5`(활동 단계 강도가 노출 확률에 주는 영향의 세기, `communication_effect`와 곱해 사용), `live_watch_seconds`(최소 60초 + 평균 180초 지수분포, 최대 10800초 clip).
+- **`communication_effect`는 여기서 적용된다**: `phase_effect = 1 + communication_effect * phase_effect_scale * (phase_multiplier[phase_type] - 1)`. `communication_effect=1.0`(baseline)이면 활동기(`comeback_active`/`tour`)는 노출 확률이 올라가고 비활동기(`inactive`)는 내려간다. `communication_effect=0`(null_effect)이면 이 항이 완전히 사라져 모든 phase_type에서 `phase_effect=1`이 된다 — PRD 13.4의 순환 논리 방지 장치가 실제로 여기서 작동한다.
+- **baseline vs null_effect 검증 결과** (400명 규모, `n_exposures / n_eligible_target`로 계산한 노출률): baseline에서는 3개 아티스트 전부 활동기(`comeback_active`+`tour` 가중평균) 노출률이 비활동기보다 뚜렷이 높았다(차이 +0.047~+0.063). null_effect에서는 같은 차이가 -0.001~-0.011로 거의 사라졌다(작은 표본에서 오는 잡음 수준). 최초에는 "노출 이벤트 수 ÷ 활동 건수"로 비교했는데 `inactive` 구간의 활동 건수 자체가 너무 적어(`phase_multiplier=0.2`로 활동도 적게 생성됨) 비율이 크게 튀었다 — 대상 팬 수(분모)를 정확히 세는 방식으로 바꾸고 나서야 기대한 패턴이 뚜렷하게 확인됐다. 최종 산출물 `data/raw/fact_user_event.csv`는 baseline 결과이고, `fact_user_event_null_effect.csv`는 이 비교 검증용으로만 남겨둔 파일이다.
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)
