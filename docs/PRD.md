@@ -4,7 +4,7 @@
 
 | 항목 | 내용 |
 | --- | --- |
-| 문서 버전 | v1.3 |
+| 문서 버전 | v1.4 |
 | 문서 상태 | MVP 구현 기준안 |
 | 작성자 | 전예진 |
 | 작성일 | 2026-09-23 |
@@ -23,6 +23,7 @@
 | v1.1 | 2026-09-23 | 1인 프로젝트의 완주 가능성을 고려해 데이터 규모, 분석 범위, 대시보드 및 기술 요구사항을 MVP 수준으로 축소 |
 | v1.2 | 2026-09-25 | `dim_content`에 `artist_id` 외래키와 콘텐츠 유형(`content_type`) 값 목록을 추가하여 콘텐츠-아티스트 연결 기준과 유형별 분석 근거를 구체화 |
 | v1.3 | 2026-09-25 | `artist_unfollow` 이벤트를 MVP 범위에 재포함하고, 팔로우 기간의 무결성 규칙을 구체화 |
+| v1.4 | 2026-09-25 | `content_view` 이벤트의 `content_type` 파라미터를 제거하고 `dim_content` 조인으로 파악하도록 정정하여 `artist_id` 처리 방식과 일관성 확보 |
 ---
 
 ## 0. 요약
@@ -399,7 +400,7 @@
 | `artist_post_view` | 맞춤 | 아티스트 게시글 상세 조회 | `activity_id`, `artist_id` |
 | `message_open` | 맞춤 | 수신 가능한 메시지 열람 | `activity_id`, `artist_id` |
 | `live_view_start` | 맞춤 | 라이브에 1분 이상 참여 | `activity_id`, `watch_seconds` |
-| `content_view` | 맞춤 | 콘텐츠 유효 조회 | `content_id`, `content_type` |
+| `content_view` | 맞춤 | 콘텐츠 유효 조회 | `content_id` |
 | `content_like` | 맞춤 | 콘텐츠 좋아요 설정 | `content_id` |
 | `comment_create` | 맞춤 | 콘텐츠 댓글 등록 | `content_id` |
 | `view_item` | 권장형 | 상품 상세 조회 | `product_id`, `currency`, `value` |

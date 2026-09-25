@@ -110,6 +110,11 @@
 
 DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확정되어 있다 (`event_tracking_plan.md` 8.1절 참고). `sign_up`, `session_start`, `artist_view`, `message_subscription_cancel`, `artist_unfollow`, `refund`는 핵심 활동에서 제외된다.
 
+### 5.8 content_type도 조인으로만 파악 (v1.4)
+
+- `content_view` 이벤트에 `content_type`을 직접 저장하지 않고 `dim_content` 조인으로 파악하기로 결정했다. `artist_id`와 동일한 원칙을 적용한 것이다(이벤트 자체의 속성이 아니라 콘텐츠 차원 테이블의 고정 속성이므로 중복 저장하지 않는다).
+- `content_unlike`, 댓글 삭제 이벤트는 계속 MVP 제외를 유지한다(분석 목적상 필요성이 낮다).
+
 ---
 
 ## 6. 배포 전략 (한 번 정한 뒤 바뀌지 않은 부분)
@@ -155,10 +160,10 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - [x] 이벤트 상세 명세 작성 진행 중
   - [x] 11.1 회원·세션 (`sign_up`, `session_start`) 완료
   - [x] 11.2 아티스트 탐색·구독 (`artist_view`, `artist_follow`, `artist_unfollow`, `message_subscription_start`, `message_subscription_cancel`) 완료
-  - [ ] 11.3 소통·콘텐츠 이용 (`artist_post_view`, `message_open`, `live_view_start`, `content_view`, `content_like`, `comment_create`) — 다음 작업 예정
+  - [x] 11.3 소통·콘텐츠 이용 (`artist_post_view`, `message_open`, `live_view_start`, `content_view`, `content_like`, `comment_create`) 완료
   - [ ] 11.4 커머스 (`view_item`, `add_to_cart`, `begin_checkout`, `purchase`, `refund`)
 - [ ] ERD + `data_dictionary.md` 작성
 - [ ] `config/data_generation.yaml` 초안 작성
 - [ ] 소량 샘플 데이터 생성 스크립트 작성
 
-**다음에 이어서 할 작업: 11.3 "소통·콘텐츠 이용" 이벤트 상세 명세부터 시작한다.** 이 묶음에서도 세부 결정이 필요한 지점(예: `content_like`의 좋아요 취소 처리 여부, 댓글 삭제 처리 여부 등)이 나올 수 있으니, 확정하지 말고 사용자에게 먼저 확인한다.
+**다음에 이어서 할 작업: 11.4 커머스 (`view_item`, `add_to_cart`, `begin_checkout`, `purchase`, `refund`)**

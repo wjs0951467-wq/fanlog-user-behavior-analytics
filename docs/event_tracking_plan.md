@@ -516,3 +516,63 @@ DAU·WAU·이탈 위험·휴면·재활성 계산에는 다음 이벤트를 핵�
 | ET-DQ-19 | 동일 팬·아티스트 조합에서 종료되지 않은 활성 팔로우 행이 2개 이상 동시 존재 | 0건 |
 | ET-DQ-20 | 허용 목록에 없는 `message_subscription_cancel.cancel_reason_category` | 0건 |
 | ET-DQ-21 | 활성 구독이 없는 상태에서 발생한 `message_subscription_cancel` | 0건 |
+
+### 11.3 소통·콘텐츠 이용
+
+#### `artist_post_view`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 아티스트 게시글 상세 화면이 정상적으로 열린 시점 |
+| 필수 파라미터 | `activity_id`, `artist_id` (공통 필드로 이미 존재하며, 추가 `parameters`는 없음) |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `message_open`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 수신 자격이 있는 메시지를 열람한 시점. 발생 시점에 유효한 구독이 있어야 한다(ET-DQ-08) |
+| 필수 파라미터 | `activity_id`, `artist_id` (추가 `parameters`는 없음) |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `live_view_start`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 라이브를 시청한 누적 시간이 60초 이상이 된 시점(4.6 기준) |
+| `parameters.watch_seconds` | 필수, 정수: 해당 팬이 그 라이브를 시청한 총 시간(초) |
+| 예시 `parameters` | `{"watch_seconds": 245}` |
+| 비고 | 핵심 활동(8.1)에 포함된다. `live_view_complete`는 MVP에서 제외되어 있으므로 "완주 시청"은 별도로 추적하지 않고 `watch_seconds` 값으로만 시청 정도를 판단한다 |
+
+#### `content_view`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 콘텐츠 상세 화면이 정상적으로 열린 시점 |
+| 필수 파라미터 | `content_id` (추가 `parameters`는 없음) |
+| `artist_id`, `content_type` 처리 | 이벤트에 직접 저장하지 않고 `dim_content.content_id`를 통해 `dim_content.artist_id`, `dim_content.content_type`을 조인하여 파악한다(`artist_id` 처리 방식은 2.4절과 동일한 원칙을 `content_type`에도 확장 적용한 것이다) |
+| 비고 | 핵심 활동(8.1)에 포함된다 |
+
+#### `content_like`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 콘텐츠에 좋아요를 설정한 시점 |
+| 필수 파라미터 | `content_id` (추가 `parameters`는 없음) |
+| 비고 | `content_unlike`는 MVP에서 계속 제외한다(좋아요는 취소 없이 유지되는 것으로 가정한다). 핵심 활동(8.1)에 포함된다 |
+
+#### `comment_create`
+
+| 항목 | 내용 |
+| --- | --- |
+| 발생 조건 | 팬이 콘텐츠에 댓글을 등록한 시점 |
+| 필수 파라미터 | `content_id` (추가 `parameters`는 없음) |
+| 비고 | 댓글 텍스트 자체는 저장하지 않는다(9.1 개인정보·자유 텍스트 미저장 원칙). 댓글 삭제는 MVP에서 추적하지 않는다(댓글은 삭제 없이 계속 존재한다고 가정한다). 핵심 활동(8.1)에 포함된다 |
+
+### 11.3.1 추가 품질 규칙
+
+| 규칙 ID | 검증 내용 | 기대 결과 |
+| --- | --- | --- |
+| ET-DQ-22 | `artist_post_view`, `message_open`, `content_view`, `content_like`, `comment_create`의 `content_id` 또는 `activity_id`가 각각 `dim_content` 또는 `fact_artist_activity`에 존재하지 않는 경우 | 0건 |
+| ET-DQ-23 | `live_view_start`의 `watch_seconds`가 60 미만인 경우 | 0건 |
+| ET-DQ-24 | `live_view_start`의 `watch_seconds`가 음수이거나 비정상적으로 큰 값(예: 24시간 초과)인 경우 | 0건 |
