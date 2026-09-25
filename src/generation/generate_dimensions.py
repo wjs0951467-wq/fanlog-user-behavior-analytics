@@ -25,6 +25,13 @@ DIM_USER_COLUMNS = [
     "is_deleted",
     "deleted_at_utc",
 ]
+DIM_ACTIVITY_PHASE_COLUMNS = [
+    "phase_id",
+    "artist_id",
+    "phase_type",
+    "start_date_kst",
+    "end_date_kst",
+]
 
 
 def generate_dim_artist(config: dict) -> pd.DataFrame:
@@ -129,6 +136,67 @@ def generate_dim_user(config: dict, user_count: int) -> pd.DataFrame:
     return pd.DataFrame(rows, columns=DIM_USER_COLUMNS)
 
 
+def _compute_phase_lengths(config: dict) -> dict:
+    """activity_phases.duration_weight를 일수로 환산한다 (모든 아티스트 공통).
+
+    phase_types 순서(canonical order)대로 앞 4개 유형은 반올림하고,
+    마지막 유형(inactive)에 나머지를 배정해 합이 정확히
+    analysis_period_days가 되도록 오차를 보정한다.
+    """
+    phase_types = config["activity_phases"]["phase_types"]
+    duration_weight = config["activity_phases"]["duration_weight"]
+    analysis_period_days = config["meta"]["analysis_period_days"]
+
+    lengths = {}
+    running_total = 0
+    for phase_type in phase_types[:-1]:
+        length = round(analysis_period_days * duration_weight[phase_type])
+        lengths[phase_type] = length
+        running_total += length
+    lengths[phase_types[-1]] = analysis_period_days - running_total
+    return lengths
+
+
+def generate_dim_activity_phase(config: dict, dim_artist: pd.DataFrame) -> pd.DataFrame:
+    seed = config["meta"]["random_seed"]
+    rng = np.random.default_rng(seed)
+
+    phase_types = config["activity_phases"]["phase_types"]
+    lengths = _compute_phase_lengths(config)
+    analysis_start = datetime.strptime(
+        config["meta"]["analysis_start_date"], "%Y-%m-%d"
+    ).date()
+
+    rows = []
+    for artist_id in dim_artist["artist_id"]:
+        # 구간 길이는 모든 아티스트가 동일하게 쓰고, 5개 구간의 "순서"만 아티스트별로 섞는다.
+        order = list(rng.permutation(phase_types))
+
+        # 제약: comeback_prep은 반드시 comeback_active보다 먼저 나와야 한다.
+        # 순서가 뒤바뀐 경우에만 두 위치를 맞바꿔 최소한으로 보정한다.
+        prep_idx = order.index("comeback_prep")
+        active_idx = order.index("comeback_active")
+        if prep_idx > active_idx:
+            order[prep_idx], order[active_idx] = order[active_idx], order[prep_idx]
+
+        current_start = analysis_start
+        for seq, phase_type in enumerate(order, start=1):
+            length = lengths[phase_type]
+            phase_end = current_start + timedelta(days=length - 1)
+            rows.append(
+                {
+                    "phase_id": f"phase_{artist_id}_{seq:02d}",
+                    "artist_id": artist_id,
+                    "phase_type": phase_type,
+                    "start_date_kst": current_start.isoformat(),
+                    "end_date_kst": phase_end.isoformat(),
+                }
+            )
+            current_start = phase_end + timedelta(days=1)
+
+    return pd.DataFrame(rows, columns=DIM_ACTIVITY_PHASE_COLUMNS)
+
+
 def main():
     parser = argparse.ArgumentParser(description="dim_artist, dim_user 생성")
     parser.add_argument(
@@ -158,15 +226,19 @@ def main():
 
     dim_artist = generate_dim_artist(config)
     dim_user = generate_dim_user(config, args.user_count)
+    dim_activity_phase = generate_dim_activity_phase(config, dim_artist)
 
     dim_artist_path = os.path.join(args.output_dir, "dim_artist.csv")
     dim_user_path = os.path.join(args.output_dir, "dim_user.csv")
+    dim_activity_phase_path = os.path.join(args.output_dir, "dim_activity_phase.csv")
 
     dim_artist.to_csv(dim_artist_path, index=False)
     dim_user.to_csv(dim_user_path, index=False)
+    dim_activity_phase.to_csv(dim_activity_phase_path, index=False)
 
     print(f"dim_artist: {len(dim_artist)}행 -> {dim_artist_path}")
     print(f"dim_user: {len(dim_user)}행 -> {dim_user_path}")
+    print(f"dim_activity_phase: {len(dim_activity_phase)}행 -> {dim_activity_phase_path}")
 
 
 if __name__ == "__main__":
