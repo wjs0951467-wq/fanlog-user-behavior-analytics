@@ -258,5 +258,6 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 - [x] SQL 품질검사 4/5 (구매·환불 정합성) 작성 및 실행 완료 (`sql/quality_checks/004_commerce_integrity.sql`, DQ-07~09·ET-DQ-25~27 + 추가검사 C(refund_amount), 1,750명 실규모 데이터 전수 검증 — 위반 0건. ET-DQ-28(pending 주문 참고용 집계)은 160건이며 위반이 아니라 정상적인 열린 퍼널 결과)
 - [x] SQL 품질검사 5/5 (타임존 일치) 작성 및 실행 완료 — 전체 5그룹 품질검사 완료 (run_all.sql로 통합 실행 가능) (`sql/quality_checks/005_timezone_consistency.sql`, DQ-10/ET-DQ-13, 5개 테이블 UTC→KST 파생 일자 전수 검증 — 위반 0건, 5.10절·5.14절 타임존 버그 재발 없음 확인. `sql/quality_checks/run_all.sql`로 001~005 전체 87개 세부 항목을 하나의 통합 표로 재확인 — 전부 0건)
 - [x] SQL 분석 마트 1/4 (mart_artist_daily) 작성 완료 (`sql/marts/001_mart_artist_daily.sql`, VIEW로 구현. 아티스트 3팀 × 90일 = 270행 확인, comeback_active+tour 구간 소통일 비율 81.2% vs daily+inactive 58.6%로 방향성 확인, inactive 구간 평균 공백일 3.6일로 다른 구간(0.1~0.5일) 대비 뚜렷이 높음. active_followers는 사용자 확인 하에 "그 아티스트 관련 핵심 활동"으로 한정)
+- [x] SQL 분석 마트 2/4 (mart_user_daily) 작성 완료 (`sql/marts/002_mart_user_daily.sql`, VIEW로 구현. 날짜 범위는 사용자 확인 하에 GREATEST(가입일, 분석 시작일)~분석 종료일로 제한(기존 가입자의 최대 2년 전 가입일을 그대로 쓰지 않음). 총 133,206행/1,750명 확인, activity_status 분포 active 95.6%·at_risk 4.2%·dormant 0.2%, 2026-02-15 DAU 마트 집계(289)와 fact_user_event 직접 집계(289) 완전 일치로 신뢰도 확인, was_reactivated_today 54건 확인)
 
-**다음 작업: SQL 분석 마트 2/4 이후 작성 (mart_user_daily, mart_content_performance, mart_commerce_funnel)**
+**다음 작업: SQL 분석 마트 3/4 이후 작성 (mart_content_performance, mart_commerce_funnel)**
