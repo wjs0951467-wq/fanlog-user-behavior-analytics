@@ -273,8 +273,19 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
   - "참여 < 조회중심" 역전의 원인(코어 판정의 구매 이력 조건)을 반사실 재계산으로 실제 검증(참여 전환율 27.4%→40.6%로 역전 해소, 가설 지지).
   - 코어 팬 판정을 생애 전체 기준으로도 비교(394명→788명), "재방문율"을 PRD 공식 W1 지표와 나란히 제시(두 지표 순위가 다름 — 12.2절), H-03 서술을 "정의가 다른 지표 세 개가 같은 방향을 가리켰다"로 명확화.
   - 남은 보수적 판단(11.3, 11.5, 11.7, 11.9)은 이미 이전 세션에서 처리됐거나 그대로 유지하기로 확정, 11.13·11.14는 애초에 해결이 필요한 항목이 아니었음.
+- [x] **최종 분석 보고서(`docs/analysis_report.md`) 초안 작성 완료** — 핵심 발견 3개(H-02 소통 공백-재방문, H-01+11.7 편상관 반전, H-03+11.12 반사실 재검증)를 분자/분모·r·p·신뢰구간 전부 포함해 정리, 11·12절 유지 항목을 한계로, PRD SC-10 고지문 포함. 이후 검증 과정에서 발견된 오차 2건(H-02 표 합계 4건 차이는 분석 시작일 공백일 계산 불가 사례, 코어 팬 "정확히 2배"는 부분집합 관계는 구조적이나 배수 자체는 우연)을 반영해 수정. 아직 초안 상태(git 미반영).
+- [x] **Streamlit 대시보드 디자인 시스템 + Page 1(종합현황) 구현 완료** (`dashboard/theme.py`, `dashboard/data.py`, `dashboard/app.py`, `dashboard/pages/01_overview.py`). 디자인 토큰(deep_violet/surface/brand_violet/brand_pink/signal_cyan 등)과 Pretendard 폰트로 Streamlit 기본 스타일을 덮어쓰는 `inject_theme()`, 그라데이션 KPI 렌더러 `render_kpi()`, 가상 데이터 배지, Plotly 다크 테마 `get_plotly_theme()`을 구현. `dashboard/data.py`는 `src/analysis/db.py`의 SQLAlchemy 엔진을 재사용해 DAU/WAU(일평균·주평균)·W1 재방문율(03_commerce_funnel.ipynb 11.10절 방식 재사용)·14일 이탈위험률·콘텐츠 참여율·구매 전환율(순서 기반 닫힌 퍼널)과 아티스트 비교·저참여 콘텐츠·세그먼트 분포(PRD 11.1절 규칙, 전체 팬 대상 재계산 시 875/394/391/80/10으로 노트북과 완전히 일치 확인)를 계산한다. 아티스트 필터는 "그 아티스트 팔로우 팬 집단으로 모집단 제한" 방식으로 설계(문서화된 판단, PRD에 명시 안 됨). `streamlit run dashboard/app.py`로 기동 확인 및 `AppTest`로 기본 상태·아티스트 부분선택·기간 축소·빈 선택·단일일 선택 등 여러 필터 조합에서 예외 없음을 확인.
+- [x] **버그 수정: `inject_theme()` 등이 주입한 CSS가 실제 브라우저에서 스타일로 적용되지 않고 화면 상단에 그대로 텍스트로 노출됨** (사용자가 실제 브라우저에서 직접 발견). 원인 2가지, 둘 다 `st.markdown()`의 CommonMark 파서 규칙 때문:
+  1. CSS/HTML을 담은 f-string이 함수 코드의 들여쓰기를 그대로 물려받아(8칸 이상) 한 줄이라도 4칸 이상 들여써진 채로 블록이 시작되면 "들여쓰기된 코드 블록"으로 해석되어 `<style>`·`<div>` 태그가 파싱되지 않고 그대로(HTML 이스케이프된 채로) 화면에 노출된다.
+  2. `inject_theme()`의 CSS 규칙 사이에 가독성을 위해 넣어둔 빈 줄이, CommonMark의 "원시 HTML 블록"을 빈 줄에서 끊어버려 `<style>` 태그 뒤에 오는 CSS 규칙 중 일부가 다시 일반 문단 텍스트로 해석되어 노출된다.
+  - **수정**: `theme.py`의 `inject_theme()`/`render_kpi()`/`render_virtual_data_badge()` 세 곳 모두 `textwrap.dedent()`로 공통 들여쓰기를 제거하고, `inject_theme()`의 CSS 규칙 사이 빈 줄을 전부 제거했다. `markdown-it-py`(CommonMark 파서)로 수정 전/후 렌더링 결과를 직접 비교해 수정 전에는 `<pre><code>`·`&lt;style&gt;`·문단(`<p>`) 형태로 이스케이프되거나 끊겨 나오던 것이, 수정 후에는 전부 의도한 그대로(`<style>`, `<div style="...">`) 파싱됨을 확인했다.
+  - **함께 발견한 부수 버그**: `dashboard/pages/01_overview.py`의 아티스트별 비교 막대 차트(`px.bar`, `color=` 인자 없이 생성)가 Plotly 기본 하늘색으로 나오는 문제도 있었다. `px.bar`는 `color=` 없이 단일 트레이스를 만들면 생성 시점에 Plotly 기본 팔레트 색을 그 트레이스에 고정해버려서, 이후 `fig.update_layout(colorway=...)`을 적용해도 이미 고정된 트레이스 색은 바뀌지 않는다. `color="artist_name", color_discrete_sequence=get_plotly_theme()["colorway"]`를 명시해 해결(범례는 x축과 중복되어 숨김). 도넛 차트도 기존에는 팔레트 외 색(`text_muted` 회색)을 하나 섞어 썼는데, 4색 팔레트만 순환(5번째 세그먼트는 첫 색으로 순환)하도록 통일했다.
+- [x] **버그 수정 2건 (사용자가 실제 브라우저에서 직접 발견)**:
+  1. **사이드바 접기 버튼 아이콘이 "keyboard_double_arrow_left" 글자 그대로 노출됨**: `inject_theme()`의 전역 폰트 규칙(`html, body, [class*="css"], [class*="st-"] { font-family: ... !important }`)이 너무 넓어서, Streamlit이 emotion으로 생성하는 클래스명(대부분 "css-"를 포함)에 걸려 아이콘 요소(`data-testid="stIconMaterial"`)까지 Pretendard로 강제 적용됐다. 이 아이콘은 리게이처 텍스트(예: `keyboard_double_arrow_left`)를 자체 번들 아이콘 폰트(`Material Symbols Rounded`, `.venv/Lib/site-packages/streamlit/static/static/css/*.css`의 `@font-face`로 직접 확인)로 그림처럼 렌더링하는 방식이라, 폰트가 바뀌면 그 글자가 그대로 보인다. `[data-testid="stIconMaterial"] { font-family: "Material Symbols Rounded" !important }` 규칙을 전역 폰트 규칙 바로 뒤에 추가해 아이콘 요소만 원래 폰트로 되돌렸다(같은 CSS 안에서 뒤에 오는 규칙이 이긴다).
+  2. **세그먼트 도넛 차트가 5개 세그먼트(신규/조회중심/참여/코어/미분류)에 4색만 순환해 마지막 색이 겹침**: `theme.py`의 카테고리 팔레트에 5번째 색으로 `positive`(`#34D399`, 이미 정의돼 있던 톤)를 추가해 `_CATEGORY_PALETTE`/`get_plotly_theme()["colorway"]`를 5색으로 확장했다. 아티스트 3팀만 쓰는 막대 차트는 앞 3색만 그대로 쓰여 영향 없음을 확인.
+  - **재검증**: `streamlit run dashboard/app.py` 재기동 + `AppTest`로 기본/아티스트 부분선택/기간 축소 조합 재확인(예외 없음), `markdown-it-py`로 CSS 텍스트 노출 재확인(리크 0건), 5개 세그먼트 색상이 전부 서로 다름을 직접 계산해 확인.
 
-**다음 작업: 최종 분석 보고서(`docs/analysis_report.md`) 작성 및 Streamlit 대시보드(3페이지) 구현**
+**다음 작업: Page 2(아티스트 소통·리텐션)·Page 3(팬 행동·커머스 퍼널) 대시보드 구현, `docs/analysis_report.md` 초안 사용자 검토 및 확정**
 
 ---
 
