@@ -307,6 +307,7 @@ DAU/WAU/이탈위험/휴면/재활성 계산에 쓰이는 12개 이벤트가 확
 
 - **상태**: `data/raw/fact_user_event_null_effect.csv` 파일은 존재하지만, 400명 규모(현재 baseline은 1,750명)·`fact_user_event` 생성 2/4 단계까지만(콘텐츠·커머스 이벤트 없음) 담고 있어 현재 baseline과 나란히 비교할 수 없다. 사용자 지시에 따라 임의로 재생성하지 않고 비교를 생략했다.
 - **다음 필요 작업**: `config/sensitivity_scenario.yaml`의 `null_effect` 시나리오로 1,750명 규모·`fact_user_event` 4/4 단계 전체를 다시 생성해서 별도 CSV로 저장해야, PRD 13.4절이 요구하는 "심어둔 패턴을 다시 발견하고 인사이트인 척하지 않는지" 검증을 baseline과 동일 조건에서 할 수 있다.
+- **[해결됨: 1,750명·4/4단계 전체로 재생성 완료(128,667행/1,750명), baseline 대비 재검증까지 마침(활동기-비활동기 노출률 차이 baseline +0.0276 vs null_effect +0.0022로 거의 소멸 확인). 이후 파일명을 `fact_user_event_null_effect_full.csv`로 정정(같은 파일명을 덮어써 규모·단계가 바뀐 사실이 파일명에 드러나지 않는 문제를 해결)하고 `02_communication_retention.ipynb`의 참조 경로도 갱신, 재실행해서 동일 결과 재확인함]**
 
 ### 11.7 artist_001의 H-01 음의 상관에 대한 사후적 설명 (`02_communication_retention.ipynb`)
 
