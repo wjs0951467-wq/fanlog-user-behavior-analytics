@@ -708,3 +708,259 @@ def get_partial_correlation_controlling_signups(artist_id: str, start_date: dt.d
         "ci_low": ci_low,
         "ci_high": ci_high,
     }
+
+
+# ============================================================
+# Page 3 (팬 행동·커머스 퍼널) 전용 함수
+# ============================================================
+# 화면 구현은 다음 세션에서 진행하고, 이번에는 데이터 함수 4개만 추가한다(docs/decisions_log.md 참고).
+
+
+@st.cache_data(ttl=300)
+def get_commerce_funnel_summary(
+    start_date: dt.date, end_date: dt.date, artist_ids: list[str] | None = None
+) -> pd.DataFrame:
+    """mart_commerce_funnel 기준 열린 퍼널(첫 관심(조회 또는 장바구니 담기)→장바구니 담기→결제
+    시작→구매 완료) 단계별 인원과 단계 간 전환율. artist_ids가 주어지면 마트의 artist_id
+    (=dim_product.artist_id, 상품 소속 아티스트) 컬럼으로 필터링한다.
+
+    '열린 퍼널'이므로 view_item 없이 add_to_cart로 시작한 경로도 포함하고(reached_* 플래그 그대로
+    사용), 순서·7일 이내 조건까지 요구하는 닫힌 퍼널(is_closed_funnel_complete)과는 다르다
+    (PRD 14.2절 "열린 퍼널과 순서 기반 닫힌 퍼널 분리" 원칙)."""
+    engine = get_engine()
+    all_artist_ids = set(get_artist_list()["artist_id"].tolist())
+    artist_filter = ""
+    if artist_ids and not set(artist_ids) >= all_artist_ids:
+        artist_filter = f"AND artist_id IN {_sql_in_list(artist_ids)}"
+
+    stats = pd.read_sql(
+        f"""
+        SELECT
+            COUNT(*) AS n_first_touch,
+            COUNT(*) FILTER (WHERE reached_add_to_cart) AS n_add_to_cart,
+            COUNT(*) FILTER (WHERE reached_checkout) AS n_checkout,
+            COUNT(*) FILTER (WHERE reached_purchase) AS n_purchase
+        FROM mart_commerce_funnel
+        WHERE first_touch_date_kst BETWEEN '{start_date}' AND '{end_date}' {artist_filter};
+        """,
+        engine,
+    ).iloc[0]
+
+    stages = [
+        ("첫 관심(조회 또는 장바구니 담기)", int(stats["n_first_touch"])),
+        ("장바구니 담기", int(stats["n_add_to_cart"])),
+        ("결제 시작", int(stats["n_checkout"])),
+        ("구매 완료", int(stats["n_purchase"])),
+    ]
+    total_n = stages[0][1]
+    prev_n = None
+    rows = []
+    for label, n in stages:
+        rows.append({
+            "stage": label,
+            "n": n,
+            "pct_of_total": round(100 * n / total_n, 1) if total_n > 0 else None,
+            "pct_of_previous": round(100 * n / prev_n, 1) if prev_n else None,
+        })
+        prev_n = n
+    return pd.DataFrame(rows)
+
+
+def _classify_segment_variant(row, core_definition: str) -> str:
+    """`_classify_segment`와 동일한 규칙이되, 코어 판정 조건을 core_definition으로 바꿀 수 있다
+    (03_commerce_funnel.ipynb 11.12절 반사실 재검증 로직)."""
+    if row["tenure_days"] <= 14:
+        return "신규"
+    is_engaged = row["participation_type_count"] >= 2
+    if core_definition == "subscription_only":
+        is_core = is_engaged and row["has_active_subscription_in_window"]
+    else:
+        is_core = is_engaged and (row["has_active_subscription_in_window"] or row["has_purchase_in_window"])
+    if is_core:
+        return "코어"
+    if is_engaged:
+        return "참여"
+    if row["has_view_activity"]:
+        return "조회중심"
+    return "미분류"
+
+
+@st.cache_data(ttl=300)
+def get_segment_conversion(
+    as_of_date: dt.date, artist_ids: list[str] | None = None, core_definition: str = "with_purchase"
+) -> pd.DataFrame:
+    """PRD 11.1절 세그먼트 규칙(as_of_date 기준 최근 30일 윈도우)으로 세그먼트별 구매 전환율을 계산한다.
+
+    core_definition:
+    - `"with_purchase"`(공식): 코어 = 참여 기준(2종 이상) 충족 AND (최근 30일 유효 구독 OR 최근 30일 구매)
+    - `"subscription_only"`(반사실, 03_commerce_funnel.ipynb 11.12절 재정의): 코어 = 참여 기준 충족 AND
+      최근 30일 유효 구독만(구매 이력 조건 제거). "참여" 세그먼트가 코어 판정의 구매 이력 조건 때문에
+      고전환 인원을 먼저 빼앗기는 정의상 순환성을 확인하기 위한 반사실 재계산이며, 노트북에서
+      전체 팬(artist_ids 없음) 기준으로 참여 전환율이 27.4%(원래) -> 40.6%(재정의)로 바뀌는 것을 확인했다.
+
+    구매 전환율의 분자(구매 팬 수)는 세그먼트 분류에 쓰인 30일 윈도우가 아니라
+    ANALYSIS_START~as_of_date 전체 기간의 purchase 이벤트 유무로 계산한다(03_commerce_funnel.ipynb
+    5절과 동일 — 분류에 쓰인 것과 같은 창으로 전환율을 재면 정의를 확인하는 순환 계산이 된다)."""
+    if core_definition not in ("with_purchase", "subscription_only"):
+        raise ValueError("core_definition은 'with_purchase' 또는 'subscription_only'여야 한다")
+
+    engine = get_engine()
+    window_start = as_of_date - dt.timedelta(days=29)
+    pop_ids = _population_user_ids(artist_ids, window_start, as_of_date)
+    pop_filter = f"AND u.user_id IN {_sql_in_list(pop_ids)}" if pop_ids is not None else ""
+
+    query = f"""
+        WITH window_events AS (
+            SELECT user_id, event_name
+            FROM fact_user_event
+            WHERE (event_timestamp_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN '{window_start}' AND '{as_of_date}'
+              AND event_name IN ('content_view','artist_post_view','message_open',
+                                  'content_like','comment_create','live_view_start','purchase')
+        ),
+        user_window_agg AS (
+            SELECT user_id,
+                bool_or(event_name IN ('content_view','artist_post_view','message_open')) AS has_view_activity,
+                COUNT(DISTINCT CASE WHEN event_name IN ('content_like','comment_create','message_open','live_view_start')
+                                    THEN event_name END) AS participation_type_count,
+                bool_or(event_name = 'purchase') AS has_purchase_in_window
+            FROM window_events
+            GROUP BY user_id
+        ),
+        active_subscription AS (
+            SELECT DISTINCT user_id
+            FROM fact_message_subscription
+            WHERE (started_at_utc AT TIME ZONE 'Asia/Seoul')::date <= '{as_of_date}'::date
+              AND (ended_at_utc IS NULL OR (ended_at_utc AT TIME ZONE 'Asia/Seoul')::date >= '{window_start}'::date)
+        ),
+        full_period_purchase AS (
+            SELECT DISTINCT user_id FROM fact_user_event
+            WHERE event_name = 'purchase'
+              AND (event_timestamp_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN '{ANALYSIS_START}' AND '{as_of_date}'
+        )
+        SELECT
+            u.user_id, u.signup_date_kst,
+            COALESCE(w.has_view_activity, false) AS has_view_activity,
+            COALESCE(w.participation_type_count, 0) AS participation_type_count,
+            COALESCE(w.has_purchase_in_window, false) AS has_purchase_in_window,
+            (asub.user_id IS NOT NULL) AS has_active_subscription_in_window,
+            (fpp.user_id IS NOT NULL) AS has_purchase_full_period
+        FROM dim_user u
+        LEFT JOIN user_window_agg w ON w.user_id = u.user_id
+        LEFT JOIN active_subscription asub ON asub.user_id = u.user_id
+        LEFT JOIN full_period_purchase fpp ON fpp.user_id = u.user_id
+        WHERE 1=1 {pop_filter};
+    """
+    df = pd.read_sql(query, engine)
+    empty_cols = ["segment", "n", "n_buyers", "purchase_conversion_pct"]
+    if df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    df["signup_date_kst"] = pd.to_datetime(df["signup_date_kst"])
+    df["tenure_days"] = (pd.Timestamp(as_of_date) - df["signup_date_kst"]).dt.days
+    df["segment"] = df.apply(lambda row: _classify_segment_variant(row, core_definition), axis=1)
+
+    summary = df.groupby("segment").agg(
+        n=("user_id", "size"),
+        n_buyers=("has_purchase_full_period", "sum"),
+    ).reset_index()
+    summary["purchase_conversion_pct"] = round(100 * summary["n_buyers"] / summary["n"], 1)
+    return summary
+
+
+@st.cache_data(ttl=300)
+def get_revenue_summary(
+    start_date: dt.date, end_date: dt.date, artist_ids: list[str] | None = None
+) -> dict:
+    """fact_order/fact_order_item 기준(마트 아님, `docs/decisions_log.md` 5.13절·`sql/marts/004_...` 원칙
+    그대로 — 재무 지표는 항상 fact 테이블에서 직접 계산) 총매출·환불액·환불률. 기간 필터는
+    created_at_utc(결제 시작 시각, 상태와 무관하게 항상 존재)의 KST 날짜로 적용한다.
+
+    artist_ids가 주어지면 매출은 주문 전체 금액이 아니라 **상품 단위**
+    (`fact_order_item.quantity*unit_price - discount_amount`)로 그 아티스트 상품에 귀속되는 금액만
+    합산한다 — 한 주문에 여러 아티스트 상품이 묶인 경우(전체 완료 주문 821건 중 11건, 직접 확인함)
+    주문 전체 금액을 쓰면 다른 아티스트 매출까지 끌어오기 때문이다. 환불액은 주문 단위로만 기록되어
+    있어(상품별로 나뉘지 않음) 그 주문의 환불액을 아티스트별 상품 매출 비중으로 비례 배분한다
+    (근사치 — 영향받는 주문이 11건뿐이라 실질적 영향은 작다)."""
+    engine = get_engine()
+    all_artist_ids = set(get_artist_list()["artist_id"].tolist())
+    filter_by_artist = bool(artist_ids) and not set(artist_ids) >= all_artist_ids
+
+    if not filter_by_artist:
+        revenue_df = pd.read_sql(
+            f"""
+            SELECT status, COUNT(*) AS order_count, SUM(order_amount) AS total_order_amount,
+                   SUM(refund_amount) AS total_refund_amount
+            FROM fact_order
+            WHERE (created_at_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN '{start_date}' AND '{end_date}'
+            GROUP BY status;
+            """,
+            engine,
+        )
+        completed_like = revenue_df[revenue_df["status"].isin(["completed", "refunded", "partially_refunded"])]
+        total_completed_orders = int(completed_like["order_count"].sum())
+        refunded_orders = int(
+            revenue_df[revenue_df["status"].isin(["refunded", "partially_refunded"])]["order_count"].sum()
+        )
+        total_revenue = int(revenue_df[revenue_df["status"] == "completed"]["total_order_amount"].sum())
+        total_refund = int(revenue_df["total_refund_amount"].sum())
+    else:
+        rows = pd.read_sql(
+            f"""
+            WITH artist_item_revenue AS (
+                SELECT oi.transaction_id, SUM(oi.quantity * oi.unit_price - oi.discount_amount) AS artist_revenue
+                FROM fact_order_item oi
+                JOIN dim_product p ON p.product_id = oi.product_id
+                WHERE p.artist_id IN {_sql_in_list(artist_ids)}
+                GROUP BY oi.transaction_id
+            ),
+            order_item_revenue AS (
+                SELECT transaction_id, SUM(quantity * unit_price - discount_amount) AS order_revenue
+                FROM fact_order_item
+                GROUP BY transaction_id
+            )
+            SELECT o.status, o.order_amount, o.refund_amount,
+                   air.artist_revenue, oir.order_revenue
+            FROM fact_order o
+            JOIN artist_item_revenue air ON air.transaction_id = o.transaction_id
+            JOIN order_item_revenue oir ON oir.transaction_id = o.transaction_id
+            WHERE (o.created_at_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN '{start_date}' AND '{end_date}';
+            """,
+            engine,
+        )
+        if rows.empty:
+            total_completed_orders = refunded_orders = total_revenue = total_refund = 0
+        else:
+            rows["refund_share"] = rows["refund_amount"] * (rows["artist_revenue"] / rows["order_revenue"])
+            completed_like = rows[rows["status"].isin(["completed", "refunded", "partially_refunded"])]
+            total_completed_orders = len(completed_like)
+            refunded_orders = len(rows[rows["status"].isin(["refunded", "partially_refunded"])])
+            total_revenue = int(round(rows.loc[rows["status"] == "completed", "artist_revenue"].sum()))
+            total_refund = int(round(rows["refund_share"].sum()))
+
+    refund_rate_pct = (
+        round(100 * refunded_orders / total_completed_orders, 2) if total_completed_orders > 0 else None
+    )
+    return {
+        "total_revenue": total_revenue,
+        "total_refund": total_refund,
+        "refund_rate_pct": refund_rate_pct,
+        "refunded_orders": refunded_orders,
+        "total_completed_orders": total_completed_orders,
+    }
+
+
+@st.cache_data(ttl=300)
+def get_purchase_timing(start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
+    """mart_commerce_funnel의 첫 관심(조회/장바구니)부터 구매까지 소요 일수(days_to_purchase) 분포.
+    구매가 실제로 완료된(reached_purchase=true) 인스턴스만 포함하며, first_touch_date_kst 기준으로
+    기간을 필터링한다. 구간화(히스토그램 버킷)는 화면 구현 단계에서 결정한다."""
+    engine = get_engine()
+    return pd.read_sql(
+        f"""
+        SELECT days_to_purchase
+        FROM mart_commerce_funnel
+        WHERE reached_purchase AND days_to_purchase IS NOT NULL
+          AND first_touch_date_kst BETWEEN '{start_date}' AND '{end_date}';
+        """,
+        engine,
+    )
