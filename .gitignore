@@ -18,3 +18,7 @@ __pycache__/
 # 운영체제 임시 파일
 Thumbs.db
 .DS_Store
+
+# 실행 로그
+*.log
+streamlit.log
