@@ -30,6 +30,8 @@ from pathlib import Path
 import numpy as np
 import pandas as pd
 import streamlit as st
+from scipy.stats import norm, spearmanr
+from scipy.stats import t as t_dist
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(PROJECT_ROOT / "src"))
@@ -362,3 +364,347 @@ def get_segment_distribution(as_of_date: dt.date, artist_ids: list[str] | None =
     df["segment"] = df.apply(_classify_segment, axis=1)
     counts = df["segment"].value_counts().rename_axis("segment").reset_index(name="n")
     return counts
+
+
+# ============================================================
+# Page 2 (아티스트 소통·리텐션) 전용 함수
+# ============================================================
+# 상관계수 관련 함수(get_communication_wau_correlation,
+# get_partial_correlation_controlling_signups)는 notebooks/02_communication_retention.ipynb의
+# H-01·11.7절 로직(Fisher z 신뢰구간, 1차 편상관 공식)을 단일 아티스트·선택 기간 기준으로 그대로
+# 이식한 것이다. 노트북과 달리 표본이 너무 작은 경우(n<8) 대시보드에서는 계산 자체를 생략한다
+# (노트북은 상관 n<5, 편상관 n<6 기준을 썼지만, 실사용자에게 노출되는 화면이라 더 보수적으로 잡았다).
+_MIN_CORRELATION_N = 8
+
+
+@st.cache_data(ttl=300)
+def get_communication_timeline(artist_id: str, start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
+    """mart_artist_daily 기준 단일 아티스트의 일별 소통 현황."""
+    engine = get_engine()
+    return pd.read_sql(
+        f"""
+        SELECT activity_date_kst, post_count, message_count, live_count,
+               had_communication, days_since_last_communication
+        FROM mart_artist_daily
+        WHERE artist_id = '{artist_id}' AND activity_date_kst BETWEEN '{start_date}' AND '{end_date}'
+        ORDER BY activity_date_kst;
+        """,
+        engine,
+    )
+
+
+def _week_start(dates: pd.Series) -> pd.Series:
+    """KST 월~일 주 경계(월요일 시작)로 날짜를 그 주의 월요일로 변환한다(PRD 8.2절 WAU 정의와 동일).
+    `_weekly_communication_wau_panel`(섹션 3 상관계수 계산의 기반)과 `get_communication_timeline_weekly`
+    (섹션 1 차트)가 이 헬퍼 하나로 주 경계를 공유해, 같은 페이지 안에서 시계열 차트와 상관계수 분석이
+    서로 다른 주 정의를 쓰는 모순이 생기지 않게 한다."""
+    dates = pd.to_datetime(dates)
+    return dates - pd.to_timedelta(dates.dt.weekday, unit="D")
+
+
+@st.cache_data(ttl=300)
+def get_communication_timeline_weekly(artist_id: str, start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
+    """단일 아티스트의 주별(KST 월~일, `_week_start()` 기준) 게시글/메시지/라이브 합계.
+    반환 컬럼: week_start, post_count, message_count, live_count, days_observed(그 주에 실제
+    관측된 날짜 수), is_partial_week(선택 기간 경계에 걸려 7일을 다 채우지 못한 주)."""
+    daily = get_communication_timeline(artist_id, start_date, end_date)
+    empty_cols = ["week_start", "post_count", "message_count", "live_count", "days_observed", "is_partial_week"]
+    if daily.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    daily = daily.copy()
+    daily["week_start"] = _week_start(daily["activity_date_kst"])
+    weekly = daily.groupby("week_start").agg(
+        post_count=("post_count", "sum"),
+        message_count=("message_count", "sum"),
+        live_count=("live_count", "sum"),
+        days_observed=("activity_date_kst", "size"),
+    ).reset_index()
+    weekly["is_partial_week"] = weekly["days_observed"] < 7
+    return weekly.sort_values("week_start").reset_index(drop=True)
+
+
+def _fisher_z_ci(r: float, n: int, n_control_vars: int = 0, confidence: float = 0.95):
+    """Fisher z 변환 기반 상관계수 신뢰구간 (02_communication_retention.ipynb와 동일 공식)."""
+    dof = n - 3 - n_control_vars
+    if dof <= 0 or pd.isna(r) or abs(r) >= 1:
+        return (None, None)
+    z = np.arctanh(r)
+    se = 1 / np.sqrt(dof)
+    z_crit = norm.ppf(1 - (1 - confidence) / 2)
+    lo, hi = np.tanh(z - z_crit * se), np.tanh(z + z_crit * se)
+    return (round(lo, 3), round(hi, 3))
+
+
+def _weekly_communication_wau_panel(artist_id: str, start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
+    """단일 아티스트의 주별 소통 활동일수·WAU·참여 팬 수·참여율 패널.
+    반환 컬럼: week_start, days_observed(그 주에 관측된 날짜 수), communication_days_per_week,
+    wau, engaged_fans, engagement_rate(주간 아티스트 참여율, docs/decisions_log.md 11.2절 정의)."""
+    engine = get_engine()
+    comm_daily = pd.read_sql(
+        f"""
+        SELECT activity_date_kst, had_communication
+        FROM mart_artist_daily
+        WHERE artist_id = '{artist_id}' AND activity_date_kst BETWEEN '{start_date}' AND '{end_date}';
+        """,
+        engine,
+    )
+    empty_cols = ["week_start", "days_observed", "communication_days_per_week", "wau", "engaged_fans", "engagement_rate"]
+    if comm_daily.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    comm_daily["activity_date_kst"] = pd.to_datetime(comm_daily["activity_date_kst"])
+    comm_daily["week_start"] = comm_daily["activity_date_kst"] - pd.to_timedelta(
+        comm_daily["activity_date_kst"].dt.weekday, unit="D"
+    )
+    weekly_comm = comm_daily.groupby("week_start").agg(
+        days_observed=("had_communication", "size"),
+        communication_days_per_week=("had_communication", "sum"),
+    ).reset_index()
+
+    weekly_wau = pd.read_sql(
+        f"""
+        WITH core_activity_by_artist AS (
+            SELECT user_id, event_date_kst, event_name
+            FROM fact_user_event
+            WHERE artist_id = '{artist_id}'
+              AND event_name IN ('artist_follow', 'message_subscription_start', 'artist_post_view', 'message_open',
+                                  'live_view_start', 'content_view', 'content_like', 'comment_create')
+            UNION ALL
+            SELECT e.user_id, e.event_date_kst, e.event_name
+            FROM fact_user_event e JOIN dim_content c ON c.content_id = e.content_id
+            WHERE c.artist_id = '{artist_id}' AND e.event_name IN ('content_view', 'content_like', 'comment_create')
+            UNION ALL
+            SELECT e.user_id, e.event_date_kst, e.event_name
+            FROM fact_user_event e JOIN dim_product p ON p.product_id = e.product_id
+            WHERE p.artist_id = '{artist_id}' AND e.event_name IN ('view_item', 'add_to_cart')
+            UNION ALL
+            SELECT e.user_id, e.event_date_kst, e.event_name
+            FROM fact_user_event e
+            JOIN fact_order_item oi ON oi.transaction_id = e.transaction_id
+            JOIN dim_product p ON p.product_id = oi.product_id
+            WHERE p.artist_id = '{artist_id}' AND e.event_name IN ('begin_checkout', 'purchase')
+        )
+        SELECT
+            date_trunc('week', event_date_kst)::date AS week_start,
+            COUNT(DISTINCT user_id) AS wau,
+            COUNT(DISTINCT CASE WHEN event_name IN ('content_like','comment_create','message_open','live_view_start')
+                                THEN user_id END) AS engaged_fans
+        FROM core_activity_by_artist
+        WHERE event_date_kst BETWEEN '{start_date}' AND '{end_date}'
+        GROUP BY date_trunc('week', event_date_kst);
+        """,
+        engine,
+    )
+    weekly_wau["week_start"] = pd.to_datetime(weekly_wau["week_start"])
+
+    panel = weekly_comm.merge(weekly_wau, on="week_start", how="left")
+    panel[["wau", "engaged_fans"]] = panel[["wau", "engaged_fans"]].fillna(0)
+    panel["engagement_rate"] = np.where(panel["wau"] > 0, panel["engaged_fans"] / panel["wau"], np.nan)
+    return panel.sort_values("week_start").reset_index(drop=True)
+
+
+@st.cache_data(ttl=300)
+def get_retention_timeline(artist_id: str, start_date: dt.date, end_date: dt.date) -> dict:
+    """주별 WAU·주간 아티스트 참여율 시계열과, 선택 기간 전체에 대한 W1 참여 재방문율(인스턴스
+    기반, 03_commerce_funnel.ipynb 11.10절 방식)을 반환한다. 모집단은 이 아티스트를 팔로우하는
+    팬 집단(dashboard/data.py 상단 설계 메모의 '아티스트 필터=팔로우 팬 집단' 방침과 동일)."""
+    panel = _weekly_communication_wau_panel(artist_id, start_date, end_date)
+    weekly = panel[["week_start", "wau", "engagement_rate"]].copy()
+
+    engine = get_engine()
+    pop_ids = _population_user_ids([artist_id], start_date, end_date)
+    kpis = _kpis_for_range(engine, start_date, end_date, pop_ids, [artist_id])
+
+    return {
+        "weekly": weekly,
+        "w1_return_rate_pct": kpis["w1_return_rate_pct"],
+        "w1_eligible_days": kpis["w1_eligible_days"],
+        "w1_return_days": kpis["w1_return_days"],
+    }
+
+
+@st.cache_data(ttl=300)
+def get_status_snapshot(artist_id: str, as_of_date: dt.date) -> dict:
+    """이 아티스트를 팔로우하는 팬 집단의 as_of_date 기준 활동 상태 스냅샷
+    (14일 이탈위험률·30일 휴면율, PRD 8.2절 정의)."""
+    engine = get_engine()
+    pop_ids = _population_user_ids([artist_id], as_of_date, as_of_date)
+    pop_filter = f"AND user_id IN {_sql_in_list(pop_ids)}" if pop_ids is not None else ""
+    status_counts = pd.read_sql(
+        f"""
+        SELECT activity_status, COUNT(*) AS n
+        FROM mart_user_daily
+        WHERE activity_date_kst = '{as_of_date}' {pop_filter}
+        GROUP BY activity_status;
+        """,
+        engine,
+    )
+    status_map = dict(zip(status_counts["activity_status"], status_counts["n"]))
+    active_n = int(status_map.get("active", 0))
+    at_risk_n = int(status_map.get("at_risk", 0))
+    dormant_n = int(status_map.get("dormant", 0))
+    total_n = active_n + at_risk_n + dormant_n
+    at_risk_denom = active_n + at_risk_n  # PRD 8.1절: "이전 30일 내 활동 있었던 팬 중"(dormant 제외)
+    return {
+        "as_of_date": as_of_date,
+        "total_n": total_n,
+        "active_n": active_n,
+        "at_risk_n": at_risk_n,
+        "dormant_n": dormant_n,
+        "at_risk_pct": round(100 * at_risk_n / at_risk_denom, 1) if at_risk_denom > 0 else None,
+        "at_risk_denom": at_risk_denom,
+        "dormant_pct": round(100 * dormant_n / total_n, 1) if total_n > 0 else None,
+    }
+
+
+@st.cache_data(ttl=300)
+def get_risk_dormancy_by_gap_bucket(artist_id: str, start_date: dt.date, end_date: dt.date) -> pd.DataFrame:
+    """단일 아티스트 팔로우 팬(정확히 이 아티스트 하나만 팔로우 중인 팬) 기준, 소통 공백
+    구간별 14일 이탈위험률·30일 휴면율 (notebooks/02_communication_retention.ipynb H-02 로직
+    재사용). 다중 팔로우 팬을 포함한 전체 팬 기준 최솟값 공백 분석은 docs/analysis_report.md
+    발견 1을 참고 — 이 페이지에서는 범위 밖이라 생략했다."""
+    engine = get_engine()
+    query = f"""
+        WITH date_spine AS (
+            SELECT DISTINCT activity_date_kst FROM mart_user_daily
+            WHERE activity_date_kst BETWEEN '{start_date}' AND '{end_date}'
+        ),
+        active_follows AS (
+            SELECT b.user_id, d.activity_date_kst, b.artist_id
+            FROM bridge_user_artist_follow b
+            CROSS JOIN date_spine d
+            WHERE (b.followed_at_utc AT TIME ZONE 'Asia/Seoul')::date <= d.activity_date_kst
+              AND (b.unfollowed_at_utc IS NULL OR (b.unfollowed_at_utc AT TIME ZONE 'Asia/Seoul')::date >= d.activity_date_kst)
+        ),
+        follow_counts AS (
+            SELECT user_id, activity_date_kst, COUNT(DISTINCT artist_id) AS n_followed, MAX(artist_id) AS the_artist_id
+            FROM active_follows
+            GROUP BY user_id, activity_date_kst
+        ),
+        single_follow AS (
+            SELECT user_id, activity_date_kst
+            FROM follow_counts
+            WHERE n_followed = 1 AND the_artist_id = '{artist_id}'
+        )
+        SELECT u.user_id, u.activity_date_kst, u.activity_status, a.days_since_last_communication
+        FROM mart_user_daily u
+        JOIN single_follow sf ON sf.user_id = u.user_id AND sf.activity_date_kst = u.activity_date_kst
+        JOIN mart_artist_daily a ON a.artist_id = '{artist_id}' AND a.activity_date_kst = u.activity_date_kst;
+    """
+    df = pd.read_sql(query, engine)
+    empty_cols = ["gap_bucket", "n", "at_risk_count", "dormant_count", "at_risk_pct", "dormant_pct"]
+    if df.empty:
+        return pd.DataFrame(columns=empty_cols)
+
+    bins = [-1, 0, 3, 7, 100]
+    labels = ["0일(당일 소통)", "1-3일", "4-7일", "8일 이상"]
+    df["gap_bucket"] = pd.cut(df["days_since_last_communication"], bins=bins, labels=labels)
+    summary = df.groupby("gap_bucket", observed=True).agg(
+        n=("user_id", "size"),
+        at_risk_count=("activity_status", lambda s: (s == "at_risk").sum()),
+        dormant_count=("activity_status", lambda s: (s == "dormant").sum()),
+    ).reset_index()
+    summary["at_risk_pct"] = round(100 * summary["at_risk_count"] / summary["n"], 2)
+    summary["dormant_pct"] = round(100 * summary["dormant_count"] / summary["n"], 2)
+    return summary
+
+
+@st.cache_data(ttl=300)
+def get_reactivation_rate(artist_id: str, start_date: dt.date, end_date: dt.date) -> dict:
+    """이 아티스트를 팔로우하는 팬 집단의 (팬,날짜) 행 중 was_reactivated_today=true인 날의 비율.
+    PRD 8.2절 공식 "재활성률"(분석 시작 시점 휴면 팬 중 재활성한 "팬" 비율, 팬 단위 코호트
+    지표)과는 분모가 다른 간이 운영 지표(날짜 단위 스냅샷 비율)라는 점에 유의해야 한다."""
+    engine = get_engine()
+    pop_ids = _population_user_ids([artist_id], start_date, end_date)
+    pop_filter = f"AND user_id IN {_sql_in_list(pop_ids)}" if pop_ids is not None else ""
+    row = pd.read_sql(
+        f"""
+        SELECT COUNT(*) FILTER (WHERE was_reactivated_today) AS reactivated_days, COUNT(*) AS total_days
+        FROM mart_user_daily
+        WHERE activity_date_kst BETWEEN '{start_date}' AND '{end_date}' {pop_filter};
+        """,
+        engine,
+    ).iloc[0]
+    total_days = int(row["total_days"])
+    reactivated_days = int(row["reactivated_days"])
+    return {
+        "rate_pct": round(100 * reactivated_days / total_days, 2) if total_days > 0 else None,
+        "reactivated_days": reactivated_days,
+        "total_days": total_days,
+    }
+
+
+def _correlation_report(x: pd.Series, y: pd.Series, min_n: int = _MIN_CORRELATION_N) -> dict:
+    paired = pd.concat([x, y], axis=1).dropna()
+    n = len(paired)
+    if n < min_n:
+        return {"available": False, "n": n, "reason": f"표본 부족(n={n}<{min_n})"}
+    r, p = spearmanr(paired.iloc[:, 0], paired.iloc[:, 1])
+    ci_low, ci_high = _fisher_z_ci(r, n)
+    return {"available": True, "r": round(r, 3), "p": round(p, 4), "n": n, "ci_low": ci_low, "ci_high": ci_high}
+
+
+@st.cache_data(ttl=300)
+def get_communication_wau_correlation(artist_id: str, start_date: dt.date, end_date: dt.date) -> dict:
+    """주별 소통 활동일수 vs WAU의 동시·1주 시차 Spearman 상관 (완전한 주(7일 전부 관측)만 사용,
+    notebooks/02_communication_retention.ipynb H-01 로직 재사용). n<8이면 계산하지 않는다."""
+    panel = _weekly_communication_wau_panel(artist_id, start_date, end_date)
+    full = panel[panel["days_observed"] == 7].reset_index(drop=True)
+
+    concurrent = _correlation_report(full["communication_days_per_week"], full["wau"])
+
+    lagged = full.copy()
+    lagged["week_start_next"] = lagged["week_start"] + pd.Timedelta(days=7)
+    next_wau = full[["week_start", "wau"]].rename(columns={"week_start": "week_start_next", "wau": "wau_next"})
+    lagged = lagged.merge(next_wau, on="week_start_next", how="inner")
+    lag = _correlation_report(lagged["communication_days_per_week"], lagged["wau_next"])
+
+    return {"concurrent": concurrent, "lag": lag, "n_full_weeks": len(full)}
+
+
+@st.cache_data(ttl=300)
+def get_partial_correlation_controlling_signups(artist_id: str, start_date: dt.date, end_date: dt.date) -> dict:
+    """그 주 마지막 날 기준 누적 가입자 수를 통제 변수로 한 1차 편(partial) Spearman 상관계수
+    (notebooks/02_communication_retention.ipynb 11.7절 로직 그대로 이식). n<8이면 계산하지 않는다."""
+    min_n = _MIN_CORRELATION_N
+    panel = _weekly_communication_wau_panel(artist_id, start_date, end_date)
+    full = panel[panel["days_observed"] == 7].reset_index(drop=True)
+    if len(full) < min_n:
+        return {"available": False, "n": len(full), "reason": f"표본 부족(n={len(full)}<{min_n})"}
+
+    engine = get_engine()
+    signup_dates = pd.to_datetime(pd.read_sql("SELECT signup_date_kst FROM dim_user;", engine)["signup_date_kst"])
+    full = full.copy()
+    full["week_end"] = full["week_start"] + pd.Timedelta(days=6)
+    full["cumulative_signups"] = full["week_end"].apply(lambda d: int((signup_dates <= d).sum()))
+
+    df = full[["communication_days_per_week", "wau", "cumulative_signups"]].dropna()
+    n = len(df)
+    if n < min_n:
+        return {"available": False, "n": n, "reason": f"표본 부족(n={n}<{min_n})"}
+
+    x, y, z = df["communication_days_per_week"], df["wau"], df["cumulative_signups"]
+    r_xy, _ = spearmanr(x, y)
+    r_xz, _ = spearmanr(x, z)
+    r_yz, _ = spearmanr(y, z)
+    denom = np.sqrt((1 - r_xz**2) * (1 - r_yz**2))
+    if denom == 0:
+        return {"available": False, "n": n, "reason": "통제 변수와 완전 상관이라 계산 불가"}
+    r_partial = (r_xy - r_xz * r_yz) / denom
+    dof = n - 3
+    if dof > 0 and abs(r_partial) < 1:
+        t_stat = r_partial * np.sqrt(dof / (1 - r_partial**2))
+        p_partial = 2 * (1 - t_dist.cdf(abs(t_stat), dof))
+    else:
+        p_partial = np.nan
+    ci_low, ci_high = _fisher_z_ci(r_partial, n, n_control_vars=1)
+    return {
+        "available": True,
+        "r_original": round(r_xy, 3),
+        "r_partial": round(r_partial, 3),
+        "p_partial": round(p_partial, 4) if pd.notna(p_partial) else None,
+        "n": n,
+        "ci_low": ci_low,
+        "ci_high": ci_high,
+    }
