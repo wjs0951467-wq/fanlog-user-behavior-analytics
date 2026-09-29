@@ -16,3 +16,5 @@ nbclient
 jinja2
 streamlit
 plotly
+pyarrow
+duckdb==1.5.6

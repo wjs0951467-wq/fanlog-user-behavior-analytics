@@ -1,0 +1,93 @@
+{
+  "exported_at_utc": "2026-09-29T04:43:44+00:00",
+  "config_version": "1.8",
+  "random_seed": 20260923,
+  "scenario": "baseline",
+  "data_generated_at_utc": "2026-09-25T16:21:18.363239+00:00",
+  "tables": {
+    "dim_artist": {
+      "kind": "table",
+      "rows": 3,
+      "columns": 4,
+      "size_bytes": 2966
+    },
+    "dim_user": {
+      "kind": "table",
+      "rows": 1750,
+      "columns": 8,
+      "size_bytes": 40000
+    },
+    "dim_content": {
+      "kind": "table",
+      "rows": 103,
+      "columns": 6,
+      "size_bytes": 7117
+    },
+    "dim_product": {
+      "kind": "table",
+      "rows": 31,
+      "columns": 7,
+      "size_bytes": 5998
+    },
+    "bridge_user_artist_follow": {
+      "kind": "table",
+      "rows": 2959,
+      "columns": 5,
+      "size_bytes": 65063
+    },
+    "fact_message_subscription": {
+      "kind": "table",
+      "rows": 593,
+      "columns": 7,
+      "size_bytes": 18517
+    },
+    "fact_user_event": {
+      "kind": "table",
+      "rows": 129595,
+      "columns": 14,
+      "size_bytes": 4645363
+    },
+    "fact_order": {
+      "kind": "table",
+      "rows": 1039,
+      "columns": 7,
+      "size_bytes": 35784
+    },
+    "fact_order_item": {
+      "kind": "table",
+      "rows": 1053,
+      "columns": 6,
+      "size_bytes": 19548
+    },
+    "meta_generation_run": {
+      "kind": "table",
+      "rows": 1,
+      "columns": 5,
+      "size_bytes": 3588
+    },
+    "mart_artist_daily": {
+      "kind": "view",
+      "rows": 270,
+      "columns": 14,
+      "size_bytes": 12788
+    },
+    "mart_user_daily": {
+      "kind": "view",
+      "rows": 133206,
+      "columns": 8,
+      "size_bytes": 133641
+    },
+    "mart_content_performance": {
+      "kind": "view",
+      "rows": 103,
+      "columns": 13,
+      "size_bytes": 14341
+    },
+    "mart_commerce_funnel": {
+      "kind": "view",
+      "rows": 4817,
+      "columns": 14,
+      "size_bytes": 120697
+    }
+  }
+}
