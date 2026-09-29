@@ -16,7 +16,7 @@
 2. `artist_001`의 소통 활동일수-WAU 상관은 원본으로는 음의 상관(r=-0.449)이었지만, 신규 가입자 유입 추세를 통제한 편상관계수에서는 r_partial=+0.580으로 부호가 반전됐다.
 3. 4단계 세그먼트에서 "참여"(27.4%)가 "조회중심"(35.8%)보다 구매 전환율이 낮은 역전이 있었으나, 코어 판정의 구매 이력 조건을 뺀 반사실 재계산에서는 참여(재정의) 전환율이 40.6%로 올라 역전이 사라지는 것이 확인됐다.
 
-**대시보드**: `[배포 URL 추가 예정]`
+**대시보드**: https://fanlog-user-behavior-analytics-tdxey3ihtyniaxpcsoacuz-v2.streamlit.app/
 
 **기술 스택**: Python · PostgreSQL · SQL · Streamlit · Plotly
 
@@ -110,9 +110,13 @@ flowchart LR
     E --> F["sql/quality_checks/<br/>품질검사 87개 항목"]
     E --> G["sql/marts/<br/>분석 마트 VIEW 4개"]
     G --> H["notebooks/<br/>Python 분석·가설 검증"]
-    G --> I["dashboard/<br/>Streamlit + Plotly"]
+    G -->|"로컬 개발: DEPLOY_MODE=postgres"| I["dashboard/<br/>Streamlit + Plotly"]
     E --> I
-    I -.-> J["Parquet 스냅샷 배포<br/>(예정)"]
+    E --> J["src/export/<br/>Parquet 내보내기"]
+    G --> J
+    J --> K[("data/processed/*.parquet<br/>스냅샷 14개")]
+    K --> L["DuckDB 배포 모드<br/>DEPLOY_MODE=duckdb"]
+    L --> M["Streamlit Community Cloud<br/>배포 완료"]
 ```
 
 - **분석 방법**: 열린 퍼널과 순서 기반 닫힌 퍼널을 분리해 계산했습니다. 통계 방법은 Spearman 상관(Fisher z 95% 신뢰구간), 누적 가입자 수를 통제한 편상관, Mann-Whitney U 검정을 썼습니다. 여기에 PRD 11.1절 규칙 기반 팬 세그먼트와 반사실(counterfactual) 재계산을 더했습니다.
@@ -139,28 +143,41 @@ flowchart LR
 
 3페이지로 구성된 Streamlit 대시보드입니다. 모든 페이지에 "가상 데이터 프로젝트" 배지와 인과 해석 주의문을 표시합니다.
 
-**대시보드 URL**: `[배포 URL 추가 예정]`
+**대시보드 URL**: https://fanlog-user-behavior-analytics-tdxey3ihtyniaxpcsoacuz-v2.streamlit.app/
 
 ### Page 1 — 종합 현황
 
 DAU·WAU, W1 재방문율, 14일 이탈위험률, 콘텐츠 참여율, 구매 전환율 KPI를 이전 동일 기간 대비 변화와 함께 보여줍니다. 아티스트별 비교, 조회는 높고 참여는 낮은 콘텐츠, 팬 세그먼트 구성도 이 페이지에 있습니다.
 
-<!-- TODO: 실제 캡처 이미지로 교체 -->
-![Page 1 스크린샷](assets/screenshot_page1.png)
+![Page 1 상단 — 가상 데이터 배지와 KPI 6종](assets/screenshot_page1_1.png)
+
+![Page 1 하단 — 저참여 콘텐츠 표와 팬 세그먼트 도넛](assets/screenshot_page1_2.png)
 
 ### Page 2 — 아티스트 소통·리텐션
 
-주별 게시글·메시지·라이브 추이와 WAU를 함께 보여주고, 소통 공백 구간별 이탈위험률·휴면율을 비교합니다. 소통 빈도와 WAU의 동시·1주 시차 상관, 누적 가입자 수 통제 편상관도 볼 수 있습니다. 부호가 반전됐는지 여부는 계산 결과에 따라 문구가 자동으로 바뀝니다.
+주별 게시글·메시지·라이브 추이와 WAU를 함께 보여주고, 소통 공백 구간별 이탈위험률·휴면율을 비교합니다. 소통 빈도와 WAU의 동시·1주 시차 상관, 누적 가입자 수 통제 편상관도 볼 수 있습니다.
 
-<!-- TODO: 실제 캡처 이미지로 교체 -->
-![Page 2 스크린샷](assets/screenshot_page2.png)
+> ⭐ **핵심 화면 — 누적 가입자 수를 통제하자 뒤집힌 상관관계 (발견 2)**
+> `artist_001`의 소통 활동일수-WAU 원본 상관은 r=-0.449였지만, 누적 가입자 수를 통제한 편상관에서는 r_partial=+0.580으로 부호가 반전됩니다. 카드 아래의 "부호가 반전되었습니다 / 방향이 유지되었습니다" 문구는 선택한 아티스트·기간의 계산 결과에 따라 자동으로 바뀝니다.
+
+![Page 2 섹션 3 — 원본 상관 vs 편상관 하이라이트 카드](assets/screenshot_page2_3.png)
+
+![Page 2 섹션 1 — 주별 소통 채널 추이와 WAU](assets/screenshot_page2_1.png)
+
+![Page 2 섹션 2 — 소통 공백 구간별 이탈위험률·휴면율](assets/screenshot_page2_2.png)
 
 ### Page 3 — 팬 행동·커머스 퍼널
 
-열린 커머스 퍼널(첫 관심 → 장바구니 → 결제 시작 → 구매)과 매출·환불을 보여줍니다. 매출·환불은 마트가 아니라 `fact_order` 기준입니다. 팬 세그먼트별 구매 전환율과 코어 정의 반사실 비교(역전 해소 여부를 자동 판정), 구매까지 걸린 시간 분포도 있습니다.
+열린 커머스 퍼널(첫 관심 → 장바구니 → 결제 시작 → 구매)과 매출·환불을 보여줍니다. 매출·환불은 마트가 아니라 `fact_order` 기준입니다. 팬 세그먼트별 구매 전환율, 코어 정의 반사실 비교, 구매까지 걸린 시간 분포도 있습니다.
 
-<!-- TODO: 실제 캡처 이미지로 교체 -->
-![Page 3 스크린샷](assets/screenshot_page3.png)
+> ⭐ **핵심 화면 — 코어 판정에서 구매 이력을 빼면? (발견 3)**
+> 공식 정의에서는 "참여" 세그먼트의 구매 전환율(27.4%)이 "조회중심"(35.8%)보다 낮습니다. 코어 판정의 구매 이력 조건을 뺀 반사실 재계산에서는 참여 전환율이 40.6%로 올라 역전이 사라집니다. 역전이 해소됐는지는 선택한 조건의 계산 결과에 따라 카드 문구로 자동 판정됩니다.
+
+![Page 3 섹션 3 — 공식 vs 재정의 "참여" 세그먼트 반사실 하이라이트 카드](assets/screenshot_page3_3.png)
+
+![Page 3 섹션 1 — 커머스 퍼널 깔때기와 매출·환불 KPI](assets/screenshot_page3_1.png)
+
+![Page 3 섹션 2 — 팬 세그먼트별 구매 전환율](assets/screenshot_page3_2.png)
 
 ---
 
@@ -267,7 +284,26 @@ jupyter notebook notebooks/   # 01_data_validation → 02_communication_retentio
 streamlit run dashboard/app.py
 ```
 
-브라우저에서 `http://localhost:8501`이 열립니다. 현재 대시보드는 로컬 PostgreSQL(`.env` 연결 정보)에서 직접 데이터를 읽습니다. 배포용 Parquet 스냅샷 방식(PRD 16.3절)은 아직 구현 전입니다.
+브라우저에서 `http://localhost:8501`이 열립니다.
+
+대시보드는 환경변수 `DEPLOY_MODE`로 두 가지 데이터 모드를 지원합니다. 두 모드는 같은 SQL을 실행하고 같은 화면을 보여줍니다.
+
+| `DEPLOY_MODE` | 용도 | 데이터를 읽는 곳 |
+| --- | --- | --- |
+| `postgres` (기본값) | 로컬 개발 | 로컬 PostgreSQL (`.env` 연결 정보, 8.1~8.5절) |
+| `duckdb` | 배포 | `data/processed/*.parquet`을 DuckDB로 조회 (PostgreSQL 불필요) |
+
+**로컬에서 duckdb 모드 테스트하기**: `.env`에 `DEPLOY_MODE=duckdb`를 추가하고 `streamlit run dashboard/app.py`를 실행합니다. `data/processed/*.parquet`은 저장소에 이미 포함되어 있어 바로 실행할 수 있습니다. 데이터를 새로 생성했다면 8.3~8.5절(생성 → 적재 → 분석 마트 생성)을 마친 뒤 Parquet을 다시 내보내야 합니다. 내보내기 스크립트는 분석 마트 VIEW도 읽기 때문에 8.5절까지 끝나 있어야 합니다.
+
+```bash
+python src/export/export_to_parquet.py   # PostgreSQL 테이블·마트 14개 → data/processed/*.parquet (행 수 자동 검증)
+```
+
+**배포**: Streamlit Community Cloud에 duckdb 모드로 배포했습니다. 같은 방식으로 배포하려면 두 가지를 설정합니다.
+- 앱 설정의 Main file path: `dashboard/app.py` (Streamlit은 이 파일 옆의 `pages/` 폴더를 페이지 목록으로 인식합니다)
+- 앱 Secrets: `DEPLOY_MODE = "duckdb"`
+
+배포 주소: https://fanlog-user-behavior-analytics-tdxey3ihtyniaxpcsoacuz-v2.streamlit.app/
 
 ---
 
@@ -280,11 +316,23 @@ fanlog-user-behavior-analytics/
 ├─ .env.example                  # DB 접속 정보 템플릿 (.env는 Git 제외)
 ├─ docker-compose.yml            # PostgreSQL 16 컨테이너
 ├─ requirements.txt
+├─ .streamlit/
+│  └─ config.toml                # 사이드바 페이지 목록 표시 설정
+├─ assets/                       # README용 대시보드 스크린샷 8개
+│  ├─ screenshot_page1_1.png
+│  ├─ screenshot_page1_2.png
+│  ├─ screenshot_page2_1.png
+│  ├─ screenshot_page2_2.png
+│  ├─ screenshot_page2_3.png
+│  ├─ screenshot_page3_1.png
+│  ├─ screenshot_page3_2.png
+│  └─ screenshot_page3_3.png
 ├─ config/
 │  ├─ data_generation.yaml       # 생성 파라미터 단일 기준 (v1.8, 시드 20260923)
 │  └─ sensitivity_scenario.yaml  # baseline / null_effect 시나리오
 ├─ data/
-│  └─ raw/                       # 생성된 CSV (Git 제외, 8.3절로 재생성)
+│  ├─ raw/                       # 생성된 CSV (Git 제외, 8.3절로 재생성)
+│  └─ processed/                 # 배포용 Parquet 스냅샷 14개 + _export_manifest.json (Git 포함)
 ├─ docs/
 │  ├─ PRD.md
 │  ├─ event_tracking_plan.md
@@ -304,6 +352,8 @@ fanlog-user-behavior-analytics/
 │  │  └─ generate_events.py
 │  ├─ ingestion/
 │  │  └─ load_to_postgres.py
+│  ├─ export/
+│  │  └─ export_to_parquet.py    # PostgreSQL → data/processed/*.parquet
 │  └─ analysis/
 │     └─ db.py                   # SQLAlchemy 연결 헬퍼
 ├─ notebooks/
@@ -314,6 +364,7 @@ fanlog-user-behavior-analytics/
 │  ├─ app.py                     # 진입점
 │  ├─ theme.py                   # 디자인 토큰·공통 렌더러
 │  ├─ data.py                    # 대시보드용 데이터 함수
+│  ├─ db_backend.py              # DEPLOY_MODE별 PostgreSQL / DuckDB+Parquet 전환
 │  └─ pages/
 │     ├─ 01_overview.py
 │     ├─ 02_communication_retention.py
@@ -321,8 +372,6 @@ fanlog-user-behavior-analytics/
 └─ tests/
    └─ test_time_utils.py
 ```
-
-> 스크린샷을 넣을 `assets/` 폴더와 배포용 `data/processed/`(Parquet 스냅샷)는 아직 만들지 않았습니다.
 
 ---
 
@@ -334,6 +383,7 @@ fanlog-user-behavior-analytics/
 | 데이터 처리 | pandas, NumPy | 전처리와 집계 |
 | 가상 데이터 | NumPy random (시드 고정), PyYAML | 재현 가능한 생성, YAML 설정 로드 |
 | 데이터베이스 | PostgreSQL 16 (Docker Compose) | 관계형 모델, SQL 마트, 품질검사 |
+| 배포 | DuckDB, pyarrow | Parquet 스냅샷을 SQL로 쿼리하는 배포용 경량 엔진 (`requirements.txt` 기준 `duckdb==1.5.6`, `pyarrow==24.0.0`으로 버전 고정) |
 | DB 연결 | SQLAlchemy, psycopg, python-dotenv | Python↔PostgreSQL 연결, `.env` 비밀값 분리 |
 | 통계 | SciPy | Spearman 상관, Mann-Whitney U |
 | 분석 환경 | Jupyter, nbformat, nbclient | 분석 노트북 작성·일괄 실행 |
