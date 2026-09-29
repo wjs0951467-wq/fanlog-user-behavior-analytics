@@ -1,9 +1,10 @@
 # Python 가상환경
 .venv/
 
-# 데이터 산출물 (대용량 원본·정제 데이터는 Git에 저장하지 않음, PRD 17절)
+# 데이터 산출물 (대용량 원본 CSV는 Git에 저장하지 않음, PRD 17절)
 data/raw/
-data/processed/
+# data/processed/*.parquet은 배포(Streamlit Community Cloud)에 필요한 스냅샷이라 버전 관리한다
+# (src/export/export_to_parquet.py로 생성, 전체 약 5MB — docs/decisions_log.md 참고)
 
 # Python 캐시 파일
 __pycache__/
