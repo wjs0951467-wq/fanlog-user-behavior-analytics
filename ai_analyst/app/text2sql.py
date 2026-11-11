@@ -1,6 +1,6 @@
 """자연어 질문 -> SQL 생성 -> 검증 -> 실행.
 
-흐름: ask() -> generate_sql()(Claude) -> validate_sql()(가드레일) -> run_query()(읽기 전용 DB)
+흐름: ask() -> generate_sql()(LLM) -> validate_sql()(가드레일) -> run_query()(읽기 전용 DB)
 Day 2 에서 여기에 "실패하면 에러를 모델에게 돌려주고 재시도" 루프를 붙인다.
 """
 import json
@@ -10,8 +10,8 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
-from openai import OpenAI
 from dotenv import load_dotenv
+from openai import OpenAI
 
 from .db import run_query
 from .sql_guard import ALLOWED_TABLES, SQLGuardError, validate_sql
@@ -25,13 +25,14 @@ Convert the user's question (usually Korean) into ONE read-only PostgreSQL query
 
 Rules:
 - Output exactly one SQL query inside a ```sql fenced block. No explanation outside the block.
-- SELECT only. Use only the tables listed in the schema. Do not qualify with a schema name.
+- SELECT only. Use only the tables/views listed under AVAILABLE TABLES. Do not qualify with a schema name.
 - Follow the SEMANTIC LAYER definitions and conventions strictly; they override your own assumptions.
 - Use only column values that appear in the schema profile (e.g. for status columns).
 - For date logic use the *_kst columns, never *_utc.
 - Always add a sensible ORDER BY and LIMIT for list-type results.
-- If the question cannot be answered from this schema, output a single SQL comment:
-  -- CANNOT_ANSWER: <short reason in Korean>
+- CANNOT_ANSWER is a last resort. Before using it, re-check AVAILABLE TABLES and the schema profile.
+  Use it only when a required table or column truly does not appear there. If you use it, output a single
+  SQL comment: -- CANNOT_ANSWER: <short reason in Korean>
 """
 
 
@@ -40,7 +41,8 @@ def render_schema(profile: dict) -> str:
     for table, info in profile.items():
         if table not in ALLOWED_TABLES:
             continue
-        lines.append(f"TABLE {table}  ({info['row_count']:,} rows)")
+        kind = info.get("kind", "table").upper()
+        lines.append(f"{kind} {table}  ({info['row_count']:,} rows)")
         for col, ci in info["columns"].items():
             extra = ""
             if "values" in ci:
@@ -61,7 +63,15 @@ def build_system_prompt() -> str:
         raise RuntimeError("semantic/schema_profile.json 이 없습니다. 먼저 `python -m scripts.profile_db` 를 실행하세요.")
     profile = json.loads(profile_path.read_text(encoding="utf-8"))
     semantic = (ROOT / "semantic" / "semantic_layer.yaml").read_text(encoding="utf-8")
-    return f"{SYSTEM_RULES}\n=== SCHEMA PROFILE ===\n{render_schema(profile)}\n=== SEMANTIC LAYER ===\n{semantic}"
+
+    available = [t for t in profile if t in ALLOWED_TABLES]
+    missing = sorted(ALLOWED_TABLES - set(available))
+    if missing:  # 프로파일에 없는 테이블이 있으면 조용히 넘어가지 않고 바로 알려준다
+        raise RuntimeError(f"schema_profile.json 에 없는 테이블/뷰: {missing}. profile_db 를 다시 실행하세요.")
+
+    return (f"{SYSTEM_RULES}\nAVAILABLE TABLES: {', '.join(available)}\n\n"
+            f"=== SCHEMA PROFILE ===\n{render_schema(profile)}\n"
+            f"=== SEMANTIC LAYER ===\n{semantic}")
 
 
 @lru_cache(maxsize=1)
