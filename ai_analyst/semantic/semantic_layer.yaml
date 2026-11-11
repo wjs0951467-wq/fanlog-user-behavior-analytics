@@ -1,13 +1,19 @@
-# FANLOG 시맨틱 레이어 v1
+# FANLOG 시맨틱 레이어 v3
 #
 # "비즈니스 용어 -> 정확한 SQL 정의" 사전. 매 질문마다 프롬프트에 통째로 들어간다.
-# 출처: 프로젝트 README, docs/data_dictionary.md (확인한 사실)
-# [검증 필요] = 아직 데이터/마트 SQL 과 대조하지 않은 추정. TODO = 사람이 직접 정해야 하는 정의.
+# 출처: 프로젝트 README, docs/data_dictionary.md, 실제 DB 값(schema_profile.json)
+# [검증 필요] = 아직 데이터와 대조하지 않은 추정. TODO = 사람이 직접 정해야 하는 정의.
 
 facts_about_data:
   - 모든 데이터는 가상 데이터다 (가상 팬 1,750명, 가상 아티스트 3팀).
   - 분석 기간은 2026-01-01 ~ 2026-03-31 (KST, 90일). 현재 날짜와 무관하다.
   - mart_user_daily, mart_artist_daily, mart_content_performance, mart_commerce_funnel 은 테이블이 아니라 VIEW 다.
+  - fact_user_event.event_name 은 실제로 17종이다 (데이터 사전의 '18개' 표기와 다르다).
+  - "이벤트 수와 테이블 행 수는 서로 일치한다 (확인됨):
+    purchase 이벤트 879건 = fact_order 에서 status 가 pending 이 아닌 주문 수 (completed 821 + refunded 43 + partially_refunded 15).
+    begin_checkout 1,039건 = fact_order 전체 주문 수 (pending 160 포함).
+    refund 이벤트 58건 = refunded 43 + partially_refunded 15.
+    artist_follow 2,959건 = bridge_user_artist_follow 행 수. message_subscription_start 593건 = fact_message_subscription 행 수."
 
 conventions:
   - 날짜 분석은 항상 *_kst 날짜 컬럼(event_date_kst, activity_date_kst, signup_date_kst 등)을 쓴다.
@@ -15,6 +21,7 @@ conventions:
   - fact_order 에는 KST 날짜 컬럼이 없다. 날짜가 필요하면 (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date 를 쓴다.
   - "'최근 N일', '이번 달', '어제'의 기준일은 CURRENT_DATE 가 아니라 데이터의 마지막 날짜(분석 기간 끝, 2026-03-31 근처)로 잡는다.
     해당 테이블의 날짜 컬럼 MAX 값을 기준으로 계산한다."
+  - 가입자 수는 반드시 dim_user 기준으로 센다. fact_user_event 의 sign_up 이벤트는 550건뿐이라 전체 가입자 1,750명과 다르다.
   - 사용자 수를 셀 때 탈퇴 사용자(dim_user.is_deleted = true)를 포함할지는 질문에 따라 다르다.
     질문이 '현재 사용자/활성 사용자'면 제외(is_deleted IS NOT TRUE), '가입자 수'처럼 누적을 묻는 경우는 포함한다. [검증 필요]
   - 금액 단위는 원(KRW).
@@ -29,16 +36,24 @@ table_guide:
   bridge_user_artist_follow: 팔로우 이력. 1행 = 1번의 팔로우. 활성 상태면 unfollowed_at_utc 가 NULL. 한 사용자가 여러 아티스트를 팔로우할 수 있다.
   fact_message_subscription: 아티스트 메시지 구독. 활성이면 ended_at_utc 가 NULL. cancel_reason_category = user_cancel/expired_no_renewal.
   fact_artist_activity: 아티스트가 공급한 소통. activity_type = post/message/live.
-  fact_user_event: 팬 행동 로그(event_name 으로 구분, 17종). 가장 큰 테이블(약 13만 행)이므로 날짜 조건을 건다.
+  fact_user_event: 팬 행동 로그. 가장 큰 테이블(약 13만 행)이므로 날짜 조건을 건다.
+    event_name 의미 - session_start(세션 시작), content_view(콘텐츠 조회), content_like(좋아요), comment_create(댓글),
+    artist_post_view(아티스트 게시글 조회), live_view_start(라이브 시청 시작), view_item(상품 조회),
+    add_to_cart(장바구니 담기), begin_checkout(결제 시작), purchase(구매 완료), refund(환불),
+    artist_follow/artist_unfollow(팔로우/해제), message_subscription_start/message_subscription_cancel(메시지 구독 시작/해지),
+    message_open(메시지 열람), sign_up(가입 이벤트).
+    퍼널 순서 - view_item -> add_to_cart -> begin_checkout -> purchase.
   fact_order: 주문 헤더. status = pending/completed/refunded/partially_refunded.
+    pending 은 결제를 시작했지만 구매가 완료되지 않은 주문(160건)이다.
     created_at_utc 는 결제 시작(begin_checkout) 시각, completed_at_utc 는 결제 완료 시각.
   fact_order_item: 주문 상세. transaction_id 로 fact_order, product_id 로 dim_product 와 조인.
-  mart_user_daily (VIEW): 사용자 x 일자. had_core_activity, had_purchase, days_since_last_core_activity, activity_status 등.
+  mart_user_daily (VIEW): 사용자 x 일자 (약 13만 행). had_core_activity, had_purchase, days_since_last_core_activity, activity_status(active/at_risk/dormant) 등.
     사용자 상태/휴면/리텐션 질문은 fact_user_event 를 직접 집계하지 말고 이 뷰를 우선 사용한다.
   mart_artist_daily (VIEW): 아티스트 x 일자. 소통 횟수, 소통 공백(days_since_last_communication), 팔로우 증감 등.
   mart_content_performance (VIEW): 콘텐츠별 조회/참여 성과 (engagement_rate 포함).
   mart_commerce_funnel (VIEW): 사용자 x 상품 단위 구매 퍼널 (장바구니 -> 결제 시작 -> 구매).
     is_closed_funnel_complete = true 는 모든 단계를 순서대로 거쳐 구매한 퍼널(537행)이다.
+
 metrics:
   current_followers:
     definition: 현재 팔로워 수
@@ -46,15 +61,19 @@ metrics:
   active_subscription:
     definition: 현재 유지 중인 메시지 구독
     sql_hint: fact_message_subscription 에서 ended_at_utc IS NULL.
+  purchase_count:
+    definition: 구매 건수
+    sql_hint: "fact_order 에서 status <> 'pending' 인 주문 수 (전체 879건). 전체 행 1,039건은 결제를 시작한 주문 수이며 구매 건수가 아니다."
   net_revenue:
     definition: 순매출 = 주문금액 - 환불금액
     sql_hint: "fact_order 에서 status <> 'pending' 인 주문의 SUM(order_amount - refund_amount).
-      pending 은 결제가 끝나지 않은 주문이라 매출에서 제외한다. 일자/월별은 completed_at_utc 를 KST 로 변환해 집계한다.
-      [검증 필요: 프로젝트의 매출 정의(docs/PRD.md, 대시보드 Page 3 쿼리)와 같은지 확인]"
+      pending 은 구매가 완료되지 않은 주문이라 제외한다 (purchase 이벤트 수와 일치하는 기준이라 확인됨).
+      일자/월별은 completed_at_utc 를 KST 로 변환해 집계한다.
+      [검증 필요: 대시보드 Page 3 의 매출 정의와 같은지 확인]"
   refund_amount_total:
     definition: 환불액
-    sql_hint: fact_order 의 SUM(refund_amount). status 가 refunded 또는 partially_refunded 인 주문이 해당한다.
-    purchase_conversion:
+    sql_hint: fact_order 의 SUM(refund_amount). status 가 refunded 또는 partially_refunded 인 주문이 해당한다 (58건).
+  purchase_conversion:
     definition: 구매 전환율 (열린 퍼널 기준)
     sql_hint: "mart_commerce_funnel 에서 COUNT(*) FILTER (WHERE reached_purchase) / COUNT(*).
       단위는 '사용자 x 상품' 행이다 (사용자 수 기준이 아님). 전체 4,817행 중 구매 791건(16.42%).
@@ -63,13 +82,19 @@ metrics:
       전환율 계산의 분모/분자 조건으로 쓰지 않는다. 단계별 이탈 분석(순서 기반)을 물을 때만 사용한다."
   activity_status:
     definition: 사용자의 일자별 상태 (mart_user_daily.activity_status)
-    sql_hint: "TODO: schema_profile.json 에서 이 컬럼의 실제 값과 건수를 확인하고, 각 값의 의미와 판정 기준(며칠 무활동인지)을 직접 적을 것."
+    sql_hint: "값은 active / at_risk / dormant 세 가지다 (active=활동 중, at_risk=이탈 위험, dormant=휴면).
+      건수는 사용자 x 일자 행 수이며 사용자 수가 아니다 (active 127,318 / at_risk 5,562 / dormant 326, 전체 133,206행).
+      '현재 상태'나 '지금 휴면인 팬 수'를 묻는 질문은 마지막 날짜(MAX(activity_date_kst))의 행만 보고 COUNT(DISTINCT user_id)로 센다.
+      경계 (확인됨, days_since_last_core_activity 의 최솟값 기준): active 는 0일부터, at_risk 는 14일부터, dormant 는 30일부터 시작한다.
+      즉 마지막 핵심 활동 후 14일 미만 = active, 14일 이상 30일 미만 = at_risk, 30일 이상 = dormant 이다."
   churn_risk_14d:
     definition: 14일 이탈 위험
-    sql_hint: "TODO: README 의 '14일 이탈위험률' 정의(docs/PRD.md)를 그대로 옮길 것."
+    sql_hint: "mart_user_daily.activity_status = 'at_risk' (마지막 핵심 활동 후 14일 이상 30일 미만)가 기본 기준이다. 14일 임계값은 데이터로 확인됨.
+      [검증 필요: 질문이 '이탈 위험'을 dormant(30일 이상)까지 포함해 묻는지는 PRD 정의를 확인할 것. 모호하면 at_risk 만 세고 SQL 주석으로 밝힌다.]"
   dormant_30d:
     definition: 30일 휴면
-    sql_hint: "TODO: README 의 '30일 휴면율' 정의를 옮길 것. 마지막 날짜(MAX(activity_date_kst))의 행만 봐야 '현재 휴면'이 된다."
+    sql_hint: "mart_user_daily.activity_status = 'dormant' (마지막 핵심 활동 후 30일 이상). 30일 임계값은 데이터로 확인됨.
+      '현재 휴면'은 마지막 날짜(MAX(activity_date_kst))의 행만 보고 COUNT(DISTINCT user_id)로 센다."
   retention_w1:
     definition: W1 참여 재방문율
     sql_hint: "TODO: PRD 공식 W1 정의를 옮길 것. (README 에 '재방문 지표는 정의에 따라 결과가 달라진다'고 적혀 있으므로 임의로 만들지 말 것)"
