@@ -90,7 +90,7 @@ metrics:
   churn_risk_14d:
     definition: 14일 이탈 위험
     sql_hint: "mart_user_daily.activity_status = 'at_risk' (마지막 핵심 활동 후 14일 이상 30일 미만)가 기본 기준이다. 14일 임계값은 데이터로 확인됨.
-      [검증 필요: 질문이 '이탈 위험'을 dormant(30일 이상)까지 포함해 묻는지는 PRD 정의를 확인할 것. 모호하면 at_risk 만 세고 SQL 주석으로 밝힌다.]"
+      [검증 필요: 질문이 '이탈 위험'을 dormant(30일 이상)까지 포함해 묻는지는 PRD 정의를 확인할 것. 모호하면 at_risk 만 세고 assumptions 에 밝힌다.]"
   dormant_30d:
     definition: 30일 휴면
     sql_hint: "mart_user_daily.activity_status = 'dormant' (마지막 핵심 활동 후 30일 이상). 30일 임계값은 데이터로 확인됨.

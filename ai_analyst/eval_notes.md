@@ -5,9 +5,12 @@
 | 구매 전환율은? | 791 / 4,817 = 16.42% | mart_commerce_funnel 에서 reached_purchase 비율 | 통과 |
 | 유입 채널별 구매 전환율 | search 17.2 / direct 16.6 / social 16.4 / push 15.5 (%) | 위와 같음, dim_user 조인 | 통과 |
 | 구매 건수는? | 879 | fact_order 에서 status <> 'pending' | 통과 |
-| 현재 휴면 팬은 몇 명? | 3 | mart_user_daily 마지막 날짜, dormant | 통과 |
+| 현재 휴면 팬은 몇 명? (탈퇴자 제외) | 3 | mart_user_daily 마지막 날짜, dormant, is_deleted 제외 (전체 기준도 3으로 동일) | 통과 |
 | 현재 이탈 위험 팬은 몇 명? (탈퇴자 제외) | 75 | mart_user_daily 마지막 날짜, at_risk, is_deleted 제외 (전체 77 - 탈퇴 2) | 통과 |
 | 현재 활동 중인 팬은 몇 명? (탈퇴자 제외) | 1,643 | mart_user_daily 마지막 날짜, active, is_deleted 제외 (전체 1,670 - 탈퇴 27) | 통과 |
+
+기준: 활동 상태(휴면 / 이탈 위험 / 활동 중) 질문의 기대값은 모두 탈퇴자 제외 기준이다. (DESIGN.md 9장)
+"결과" 열은 Day 1 버전(LLM 1회 호출)으로 확인한 것이다.
 
 ## 함정 케이스 (발견한 문제)
 - is_closed_funnel_complete = true 로 필터하면 전환율이 100%가 나옴. 시맨틱 레이어 힌트가 틀렸던 것을 데이터 검증으로 발견해 정의를 고침.

@@ -2,7 +2,7 @@ fastapi
 uvicorn[standard]
 sqlalchemy
 psycopg[binary]
-anthropic
+openai
 sqlglot
 pyyaml
 python-dotenv
