@@ -7,3 +7,7 @@ sqlglot
 pyyaml
 python-dotenv
 pytest
+# Day 3 이탈 위험 모델 (app/churn.py)
+pandas
+numpy
+scikit-learn
