@@ -1,4 +1,6 @@
-# 평가 메모 (정답은 DBeaver로 직접 계산한 값)
+# 평가 메모 (정답은 모델 출력이 아니라 직접 작성한 SQL 로 계산한 값)
+
+검증 도구와 상태는 "확인 방법" 열에 행마다 적는다. "DBeaver 직접 검증"이라는 표현은 DBeaver 로 확인한 행에만 쓴다.
 
 | 질문 | 정답 | 확인 방법 | 결과 |
 |---|---|---|---|
@@ -6,12 +8,15 @@
 | 유입 채널별 구매 전환율 | search 17.2 / direct 16.6 / social 16.4 / push 15.5 (%) | 위와 같음, dim_user 조인 | 통과 |
 | 구매 건수는? | 879 | fact_order 에서 status <> 'pending' | 통과 |
 | 현재 휴면 팬은 몇 명? (탈퇴자 제외) | 3 | mart_user_daily 마지막 날짜, dormant, is_deleted 제외 (전체 기준도 3으로 동일) | 통과 |
-| 현재 이탈 위험 팬은 몇 명? (탈퇴자 제외) | 75 | mart_user_daily 마지막 날짜, at_risk, is_deleted 제외 (전체 77 - 탈퇴 2). DBeaver 직접 검증 완료 (2026-11-11) | 통과 |
-| 현재 활동 중인 팬은 몇 명? (탈퇴자 제외) | 1,643 | mart_user_daily 마지막 날짜, active, is_deleted 제외 (전체 1,670 - 탈퇴 27). DBeaver 직접 검증 완료 (2026-11-11) | 통과 |
+| 현재 이탈 위험 팬은 몇 명? (탈퇴자 제외) | 75 | mart_user_daily 마지막 날짜, at_risk, is_deleted 제외 (전체 77 - 탈퇴 2). 아직 독립 검증 없음(추정) | 통과 |
+| 현재 활동 중인 팬은 몇 명? (탈퇴자 제외) | 1,643 | mart_user_daily 마지막 날짜, active, is_deleted 제외 (전체 1,670 - 탈퇴 27). churn_validation.ipynb 의 SQL_POPULATION_CHECK 로 검증 (Claude Code 실행, 2026-11-11) | 통과 |
 
 기준: 활동 상태(휴면 / 이탈 위험 / 활동 중) 질문의 기대값은 모두 탈퇴자 제외 기준이다. (DESIGN.md 9장)
-DBeaver 독립 검증 (2026-11-11): 마지막 날짜 기준 탈퇴자 제외 값은 active 1,643 / at_risk 75 / dormant 3 이다.
+검증 상태 (2026-11-11): 마지막 날짜 기준 탈퇴자 제외 값은 active 1,643 / at_risk 75 / dormant 3 이다.
 (전체 기준 1,670 / 77 / 3, 그중 탈퇴자 27 / 2 / 0)
+- active 1,643: notebooks/churn_validation.ipynb 의 SQL_POPULATION_CHECK 로 검증 (Claude Code 실행).
+- at_risk 75: 아직 독립 검증 없음(추정). 전체 77 에서 탈퇴 2 를 뺀 값이고, 모델이 낸 숫자와 일치한다는 것은 독립 검증이 아니다.
+- 이 줄은 이전에 "DBeaver 독립 검증"이라고 적혀 있었으나, DBeaver 로 확인한 것이 아니어서 고쳤다.
 "결과" 열은 Day 1 버전(LLM 1회 호출)으로 확인한 것이다.
 
 ## Day 2 버전 재확인 (2026-11-11)

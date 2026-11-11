@@ -79,6 +79,22 @@ TOP_N = 100        # precision@N 의 N (기준일별 상위 100명)
 N_BOOTSTRAP = 1000
 BOOTSTRAP_SEED = 0
 
+# 위험 군: 점수 "순위"로 나눈다. 10% / 20% 라는 경계는 데이터 근거가 없는 운영 가정이다.
+# 이름을 "고/중/저위험"으로 붙이지 않는 이유: 주 모델의 최대 예측 확률이 17% 정도이고 상위 100명의
+# 실제 비율도 전체의 약 2배 수준이라, "고위험"이라는 말이 실제보다 강한 인상을 주기 때문이다.
+TIERS = ["상위 10%군", "11~30%군", "나머지"]
+TIER_CUTS = (0.10, 0.30)
+GAP_LONG_DAYS = 4   # 체감 소통 공백이 4일 이상이면 "공백 김" (README 발견 1 의 기준)
+MIN_CELL = 20       # 세그먼트 칸 인원이 이보다 적으면 해석을 보류한다
+PURCHASE_LABELS = {1: "기간 내 구매 경험 있음", 0: "기간 내 구매 경험 없음"}  # 2026-01-01 이후 구매만 데이터에 있다
+# 팔로우가 없는 팬은 공백 값 자체가 없다. "공백이 짧은 팬"과 섞으면 뜻이 다른 집단이 한 칸에 들어가므로 따로 둔다.
+GAP_GROUPS = ["공백 4일 이상", "공백 4일 미만", "팔로우 없음"]
+NOT_SEPARABLE = "구분 안 됨 (구간 겹침)"
+SEPARABLE = "구분됨 (구간 안 겹침)"
+HOLD_NOTE = "해석 보류 (20명 미만)"
+CAVEAT = ("이 결과는 가상 데이터에서 가정한 생성 규칙의 탐지 결과이며 인과가 아니다. "
+          "군은 '이탈할 팬'이 아니라 '이탈 위험 순위가 높은 팬'을 뜻한다.")
+
 
 # ---------- 데이터 로딩 ----------
 def prepare(data: dict) -> dict:
@@ -345,3 +361,187 @@ def run_evaluation(data: dict, n_boot: int = N_BOOTSTRAP) -> dict:
         "ci": bootstrap_ci(test, scores, pairs=[("M1", "M0"), ("M2", "M1"), ("M3", "M1")], n_boot=n_boot),
         "coefficients": {name: coefficients(models[name], feats) for name, feats in MODEL_FEATURES.items()},
     }
+
+
+# ---------- 위험 군 ----------
+def assign_tiers(scores) -> np.ndarray:
+    """점수가 높은 순서로 줄 세워 상위 10% / 다음 20% / 나머지로 나눈다.
+
+    같은 날의 팬들 사이에서만 순위를 매겨야 하므로, 기준일 하나의 점수만 넣는다.
+    동점은 입력 순서대로 끊는다(임의지만 항상 같은 결과). 특징이 정수라 동점이 있을 수 있다.
+    """
+    scores = pd.Series(np.asarray(scores, dtype=float))
+    rank = scores.rank(method="first", ascending=False)  # 1 = 가장 위험 순위가 높음
+    n = len(scores)
+    tiers = np.full(n, TIERS[2], dtype=object)
+    tiers[(rank <= round(n * TIER_CUTS[1])).to_numpy()] = TIERS[1]
+    tiers[(rank <= round(n * TIER_CUTS[0])).to_numpy()] = TIERS[0]
+    return tiers
+
+
+def tier_table(df: pd.DataFrame, tiers, n_boot: int = N_BOOTSTRAP, seed: int = BOOTSTRAP_SEED) -> pd.DataFrame:
+    """군별 실제 라벨 비율과 전체 대비 배수 (+ 사용자 단위 부트스트랩 95% 구간).
+
+    "상위 10%군"이라는 이름이 실제로 어느 정도의 차이를 뜻하는지 숫자로 보여주기 위한 표다.
+    인원은 (사용자 x 기준일) 행 수다. 같은 사용자가 기준일마다 한 번씩 들어간다.
+    """
+    d = pd.DataFrame({"user_id": df["user_id"].to_numpy(), "label": df["label"].to_numpy(),
+                      "tier": pd.Categorical(tiers, categories=TIERS)})
+    # 사용자별로 "군마다 몇 행, 그중 양성 몇 건"을 미리 세어 두면 재표본은 더하기만 하면 된다
+    n_by_user = d.groupby(["user_id", "tier"], observed=False).size().unstack().to_numpy()
+    pos_by_user = d.groupby(["user_id", "tier"], observed=False)["label"].sum().unstack().to_numpy()
+
+    def rates(n, pos):
+        rate = pos / n
+        return rate, rate / (pos.sum() / n.sum())  # 배수 = 군의 비율 / 전체 비율
+
+    n, pos = n_by_user.sum(axis=0), pos_by_user.sum(axis=0)
+    rate, lift = rates(n, pos)
+
+    rng = np.random.default_rng(seed)
+    boot_rate, boot_lift = [], []
+    for _ in range(n_boot):
+        picked = rng.integers(0, len(n_by_user), len(n_by_user))  # 사용자를 복원 추출
+        r, l = rates(n_by_user[picked].sum(axis=0), pos_by_user[picked].sum(axis=0))
+        boot_rate.append(r)
+        boot_lift.append(l)
+    rate_lo, rate_hi = np.quantile(boot_rate, [0.025, 0.975], axis=0)
+    lift_lo, lift_hi = np.quantile(boot_lift, [0.025, 0.975], axis=0)
+
+    return pd.DataFrame({"tier": TIERS, "n": n, "positives": pos, "label_rate": rate,
+                         "rate_ci_low": rate_lo, "rate_ci_high": rate_hi,
+                         "lift": lift, "lift_ci_low": lift_lo, "lift_ci_high": lift_hi})
+
+
+def _scored_test(data: dict) -> pd.DataFrame:
+    """평가 구간 데이터에 분할 모델 M1 의 점수와 기준선 M0 의 점수를 붙인다."""
+    train_dates, _, test_dates = split_dates(reference_dates())
+    train, test = build_dataset(data, train_dates), build_dataset(data, test_dates)
+    features = MODEL_FEATURES["M1"]
+    return test.assign(M1=model_score(fit_model(train, features), test, features), M0=baseline_score(test))
+
+
+def _tiers_by_date(test: pd.DataFrame, score_column: str) -> pd.Series:
+    """기준일마다 따로 군을 나눈다 (운영에서는 같은 날의 팬들 사이에서 순위를 매기므로)."""
+    return test.groupby("ref_date")[score_column].transform(assign_tiers)
+
+
+def tier_evidence(data: dict, n_boot: int = N_BOOTSTRAP) -> pd.DataFrame:
+    """평가 구간에서 군별 실제 라벨 비율을 잰다 (B단계와 같은 분할 모델 M1).
+
+    학습 구간으로만 학습한 모델로 평가 구간에 점수를 매기고, 기준일마다 따로 군을 나눈 뒤 합친다.
+    """
+    test = _scored_test(data)
+    return tier_table(test, _tiers_by_date(test, "M1"), n_boot=n_boot)
+
+
+def tier_comparison(data: dict, n_boot: int = N_BOOTSTRAP) -> pd.DataFrame:
+    """[탐색적 추가] M1 로 나눈 군과 기준선 M0(일수가 긴 순서)로 나눈 군을 나란히 놓는다.
+
+    모델 평가 설계(M0~M3, 분할, 지표)를 바꾸는 것이 아니라, "굳이 모델로 군을 나눌 필요가 있는가"를
+    보기 위한 참고 표다. 같은 군끼리 실제 비율의 95% 구간이 겹치면 "구분 안 됨"으로 적는다.
+    M0 은 점수가 정수(일수)라 동점이 많아서, 군 경계가 입력 순서에 더 크게 좌우된다.
+    """
+    test = _scored_test(data)
+    m1 = tier_table(test, _tiers_by_date(test, "M1"), n_boot=n_boot)
+    m0 = tier_table(test, _tiers_by_date(test, "M0"), n_boot=n_boot)
+    overlap = (m1["rate_ci_low"] <= m0["rate_ci_high"]) & (m0["rate_ci_low"] <= m1["rate_ci_high"])
+    m1.insert(0, "ranking", "M1 주 모델")
+    m0.insert(0, "ranking", "M0 기준선 (탐색적 추가)")
+    m1["m1_vs_m0"] = np.where(overlap, NOT_SEPARABLE, SEPARABLE)
+    m0["m1_vs_m0"] = ""
+    return pd.concat([m1, m0], ignore_index=True)
+
+
+# ---------- 현재 점수와 세그먼트 ----------
+def score_current(data: dict) -> pd.DataFrame:
+    """데이터의 마지막 날짜(03-31) 기준으로 모집단에 점수와 군을 매긴다. 사용자 단위 표(내부용)다.
+
+    모델: 라벨을 알 수 있는 모든 기준일(9개, 간격으로 버렸던 02-19 포함)로 M1 을 다시 학습한다.
+          가장 최근 데이터까지 써야 "지금"에 가깝기 때문이다.
+    주의: 이 모델은 따로 평가할 수 없다. 03-31 의 정답(이후 14일)이 데이터에 없기 때문이다.
+          보고하는 성능은 학습/평가를 나눈 분할 모델(run_evaluation 의 M1) 값이다.
+    """
+    t = data["daily"]["activity_date_kst"].max()
+    features = MODEL_FEATURES["M1"]
+    model = fit_model(build_dataset(data, reference_dates()), features)
+    scored = build_snapshot(data, t, with_label=False)
+    scored["score"] = model_score(model, scored, features)
+    scored["tier"] = assign_tiers(scored["score"])
+    scored["gap_group"] = np.select(
+        [scored["no_follow"] == 1, scored["min_comm_gap"] >= GAP_LONG_DAYS],
+        [GAP_GROUPS[2], GAP_GROUPS[0]], default=GAP_GROUPS[1])
+    return scored
+
+
+def gap_by_artist_combo(data: dict, scored: pd.DataFrame) -> pd.DataFrame:
+    """체감 소통 공백 값별로, 그 팬들이 팔로우하는 아티스트 조합을 센다 (집계만, user_id 없음).
+
+    왜 필요한가: 아티스트가 3팀뿐이라 "체감 소통 공백"이 사실상 "누구를 팔로우하는가"와 같은 정보일 수 있다.
+    그렇다면 세그먼트의 소통 공백 축은 이탈 위험 요인이 아니라 아티스트 구성 분류로 읽어야 한다.
+    """
+    t = scored["ref_date"].iloc[0]
+    follows = _active_on(data["follows"], t)
+    combo = follows.groupby("user_id")["artist_id"].agg(lambda s: " + ".join(sorted(set(s)))).rename("artists")
+    d = scored[["user_id", "gap_group", "min_comm_gap"]].merge(combo, on="user_id", how="left")
+    d["artists"] = d["artists"].fillna("(팔로우 없음)")
+    return (d.groupby(["gap_group", "min_comm_gap", "artists"]).size().rename("n").reset_index()
+            .sort_values(["min_comm_gap", "n"], ascending=[True, False], ignore_index=True))
+
+
+def population_check(data: dict) -> dict:
+    """마지막 날짜 기준 인원 검산: (active 이면서 탈퇴자 제외) = 모집단 + 가입 14일 미만 제외 인원."""
+    t = data["daily"]["activity_date_kst"].max()
+    daily, users = data["daily"], data["users"]
+    active = set(daily.loc[(daily["activity_date_kst"] == t) & (daily["activity_status"] == "active"), "user_id"])
+    not_deleted = set(users.loc[~users["is_deleted"].astype(bool), "user_id"])
+    population = set(select_population(data, t))
+    return {"ref_date": t, "active_not_deleted": len(active & not_deleted), "population": len(population),
+            "excluded_short_tenure": len((active & not_deleted) - population)}
+
+
+def segment_table(scored: pd.DataFrame, min_cell: int = MIN_CELL) -> dict:
+    """군 x 기간 내 구매 경험 x 소통 공백으로 인원을 센다. 결과에 user_id 를 넣지 않는다(집계만).
+
+    "공백 4일 이상"인 사람이 없거나 min_cell 명 미만이면 그 축은 나눌 의미가 없으므로
+    세그먼트에서 빼고 "해당 없음"으로 보고한다. 인원이 적은 칸은 해석 보류로 표시한다.
+    """
+    total = len(scored)
+    n_gap_long = int((scored["gap_group"] == GAP_GROUPS[0]).sum())
+    use_gap = n_gap_long >= min_cell
+
+    d = pd.DataFrame({"tier": pd.Categorical(scored["tier"], categories=TIERS),
+                      "purchase": pd.Categorical(scored["purchased_in_period"].map(PURCHASE_LABELS),
+                                                 categories=list(PURCHASE_LABELS.values()))})
+    keys = ["tier", "purchase"]
+    if use_gap:
+        d["comm_gap"] = pd.Categorical(scored["gap_group"], categories=GAP_GROUPS)
+        keys.append("comm_gap")
+
+    # observed=False: 인원이 0명인 칸도 표에 남긴다 (빠진 칸이 없어야 합계를 검산할 수 있다)
+    table = d.groupby(keys, observed=False).size().rename("n").reset_index()
+    table["share"] = table["n"] / total
+    table["note"] = np.where(table["n"] < min_cell, HOLD_NOTE, "")
+    assert table["n"].sum() == total  # 세그먼트 칸의 합은 항상 대상 인원과 같아야 한다
+    return {"table": table, "total": total, "n_gap_long": n_gap_long,
+            "gap_axis": "사용" if use_gap else "해당 없음"}
+
+
+def churn_report(data: dict, n_boot: int = N_BOOTSTRAP) -> dict:
+    """세그먼트 결과와, 군의 의미를 보여주는 근거 표를 항상 함께 돌려준다 (Day 4 도구가 쓸 진입점).
+
+    세그먼트만 보여주면 "상위 10%군"이 얼마나 위험한지 알 수 없어 과장해서 읽기 쉽다.
+    """
+    segments = segment_table(score_current(data))
+    return {"ref_date": data["daily"]["activity_date_kst"].max(),
+            "population": population_check(data),
+            "segments": segments["table"], "total": segments["total"],
+            "gap_axis": segments["gap_axis"], "n_gap_long": segments["n_gap_long"],
+            "tier_evidence": tier_evidence(data, n_boot=n_boot),
+            "notes": [CAVEAT,
+                      "군의 경계(상위 10%, 다음 20%)는 데이터 근거가 없는 운영 가정이다.",
+                      "군별 실제 비율(tier_evidence)은 평가 구간(02-26, 03-05, 03-12)에서 분할 모델로 잰 값이다. "
+                      "현재 점수용 모델은 정답이 없어 따로 평가할 수 없다.",
+                      f"인원이 {MIN_CELL}명 미만인 칸은 해석을 보류한다.",
+                      "소통 공백 축은 '어떤 아티스트를 팔로우하는가'에 따라 정해지는 아티스트 구성 분류이며, "
+                      "이탈 위험 요인으로 검증되지 않았다."]}
