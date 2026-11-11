@@ -8,7 +8,12 @@
 - 팔로우/구독처럼 "지금 상태"를 담은 컬럼은 기준일 시점으로 다시 계산한다.
 - 계산은 DataFrame 을 받는 순수 함수로 만든다. DB 없이 작은 가짜 표로 테스트할 수 있게 하기 위해서다.
 """
+import numpy as np
 import pandas as pd
+from sklearn.linear_model import LogisticRegression
+from sklearn.metrics import average_precision_score, roc_auc_score
+from sklearn.pipeline import make_pipeline
+from sklearn.preprocessing import StandardScaler
 
 from .db import run_query
 from .sql_guard import validate_sql
@@ -50,10 +55,29 @@ LOAD_SQL = {
 }
 DATE_COLUMNS = ("activity_date_kst", "signup_date_kst", "start_date_kst", "end_date_kst")
 
-# 모델에 넣는 특징. 소통 공백 2개는 "뺀 모델"과 비교하기 위해 따로 묶어 둔다 (Day 3 Q17).
-BASE_FEATURES = ["days_since_last_core_activity", "active_days_7", "active_days_14", "activity_change",
-                 "purchased_14d", "n_following", "is_subscribed"]
+# 특징 묶음.
+# 활동 기반: mart_user_daily 에서 나오며 분석 기간 내내 같은 방식으로 관측된다.
+ACTIVITY_FEATURES = ["days_since_last_core_activity", "active_days_7", "active_days_14", "activity_change",
+                     "purchased_14d"]
+# 관계 기반: 팔로우 이력이 2026-01-01 부터만 있어서 이른 기준일일수록 "팔로우 없음"이 많다(학습 52% vs 평가 19%).
+# 실제 관계보다 "기준일이 얼마나 이른가"를 나타내는 날짜 대리변수가 될 수 있어 주 모델에서 뺀다.
+RELATION_FEATURES = ["n_following", "no_follow", "is_subscribed"]
+# 소통 공백: 아티스트가 3팀뿐이라 이것도 날짜에 따라 움직인다. README 가설 H-02 와 연결되는 비교용.
 GAP_FEATURES = ["min_comm_gap", "no_follow"]
+
+# M0 은 모델이 아니라 규칙 기준선(마지막 핵심 활동 후 일수가 긴 순서)이다.
+# 대표 성능은 M1. M2/M3 는 "특징을 추가했을 때 달라지는가"를 보는 비교다.
+MODEL_FEATURES = {
+    "M1": ACTIVITY_FEATURES,
+    "M2": ACTIVITY_FEATURES + RELATION_FEATURES,
+    "M3": ACTIVITY_FEATURES + GAP_FEATURES,
+}
+ALL_FEATURES = ACTIVITY_FEATURES + RELATION_FEATURES + ["min_comm_gap"]
+
+LOGISTIC_C = 1.0   # 정규화 강도. scikit-learn 기본값으로 고정하고 평가 구간 결과를 보고 조정하지 않는다
+TOP_N = 100        # precision@N 의 N (기준일별 상위 100명)
+N_BOOTSTRAP = 1000
+BOOTSTRAP_SEED = 0
 
 
 # ---------- 데이터 로딩 ----------
@@ -201,3 +225,123 @@ def build_snapshot(data: dict, t, with_label: bool = True) -> pd.DataFrame:
 def build_dataset(data: dict, dates: list) -> pd.DataFrame:
     """여러 기준일의 스냅샷을 위아래로 붙인다. 같은 사용자가 기준일마다 한 행씩 나온다."""
     return pd.concat([build_snapshot(data, t) for t in dates], ignore_index=True)
+
+
+# ---------- 점수: 기준선과 로지스틱 회귀 ----------
+def baseline_score(df: pd.DataFrame) -> np.ndarray:
+    """M0 규칙 기준선: 마지막 핵심 활동 후 일수가 길수록 위험하다고 본다. 학습이 필요 없다."""
+    return df["days_since_last_core_activity"].to_numpy(dtype=float)
+
+
+def fit_model(train: pd.DataFrame, features: list, C: float = LOGISTIC_C):
+    """표준화 + 로지스틱 회귀.
+
+    표준화를 파이프라인 안에 넣는 이유: fit 은 학습 데이터로만 하므로, 평균/표준편차도 학습 구간 값만 쓴다.
+    평가 구간까지 합쳐 표준화하면 평가 구간의 정보가 모델에 새어 들어간다.
+    class_weight 는 쓰지 않는다. 순위 지표에는 영향이 거의 없고 예측 확률만 왜곡되기 때문이다.
+    """
+    model = make_pipeline(StandardScaler(), LogisticRegression(C=C, max_iter=1000))
+    return model.fit(train[features], train["label"])
+
+
+def model_score(model, df: pd.DataFrame, features: list) -> np.ndarray:
+    """14일 안에 핵심 활동이 없을 확률 추정치 (0~1)."""
+    return model.predict_proba(df[features])[:, 1]
+
+
+def coefficients(model, features: list) -> pd.Series:
+    """표준화한 특징의 계수. 단위가 "표준편차 1만큼"으로 같아져 크기를 서로 비교할 수 있다.
+
+    해석 주의: 상관관계일 뿐 원인이 아니다. 또 비슷한 정보를 담은 특징끼리는 계수를 서로 나눠 가지므로
+    (예: activity_change = 2 x active_days_7 - active_days_14) 개별 계수의 크기와 부호가 불안정하다.
+    """
+    return pd.Series(model[-1].coef_[0], index=features, name="coef_standardized")
+
+
+# ---------- 지표 ----------
+def precision_at_n(labels, scores, n: int = TOP_N) -> float:
+    """점수 상위 n명 중 실제 양성(라벨=1)의 비율.
+
+    동점 처리: 기준선은 "일수"라서 같은 점수가 많다. 경계에 걸린 동점자 중 누구를 뽑느냐에 따라
+    값이 흔들리지 않도록, 동점자 중에서 무작위로 뽑았을 때의 기대값으로 계산한다.
+    """
+    labels, scores = np.asarray(labels, dtype=float), np.asarray(scores, dtype=float)
+    n = min(n, len(scores))
+    cutoff = np.sort(scores)[::-1][n - 1]  # n번째로 높은 점수
+    above, tied = scores > cutoff, scores == cutoff
+    slots_left = n - above.sum()            # 동점자에게 돌아가는 자리 수
+    return float((labels[above].sum() + slots_left * labels[tied].mean()) / n)
+
+
+def evaluate(df: pd.DataFrame, scores, n: int = TOP_N) -> dict:
+    """기준일별 지표와 그 평균을 계산한다.
+
+    왜 기준일별인가: 기준일마다 양성 비율이 다르다. 전체를 합쳐서 AUC 를 재면
+    "누가 위험한가"가 아니라 "어느 날짜가 위험한가"만 맞혀도 점수가 올라간다.
+    운영에서는 같은 날의 팬들 사이에서 순위를 매기므로, 기준일 안에서의 순위 성능이 주 지표다.
+    """
+    scored = df[["ref_date", "label"]].assign(score=np.asarray(scores, dtype=float))
+    rows = []
+    for t, g in scored.groupby("ref_date"):
+        base_rate = g["label"].mean()
+        precision = precision_at_n(g["label"], g["score"], n)
+        rows.append({"ref_date": t, "n": len(g), "base_rate": base_rate,
+                     "auc": roc_auc_score(g["label"], g["score"]),
+                     "pr_auc": average_precision_score(g["label"], g["score"]),
+                     "precision_at_n": precision,
+                     "lift": precision / base_rate,           # 무작위로 뽑았을 때 대비 몇 배인가
+                     "top_share": min(n, len(g)) / len(g)})   # 상위 n명이 그날 인원의 몇 %인가
+    by_date = pd.DataFrame(rows)
+    return {"by_date": by_date,
+            "auc_mean": by_date["auc"].mean(),            # 주 지표
+            "pr_auc_mean": by_date["pr_auc"].mean(),
+            "lift_mean": by_date["lift"].mean(),
+            "auc_pooled": roc_auc_score(scored["label"], scored["score"]),  # 참고용 (날짜 효과 포함)
+            "pr_auc_pooled": average_precision_score(scored["label"], scored["score"])}
+
+
+def bootstrap_ci(df: pd.DataFrame, scores: dict, pairs: list, n_boot: int = N_BOOTSTRAP,
+                 seed: int = BOOTSTRAP_SEED, n: int = TOP_N) -> pd.DataFrame:
+    """사용자 단위 부트스트랩으로 95% 신뢰구간을 구한다.
+
+    왜 행이 아니라 사용자 단위인가: 같은 사용자가 여러 기준일에 나오고 그 행들은 서로 비슷하다.
+    행을 독립인 것처럼 뽑으면 표본이 실제보다 많은 것처럼 보여 구간이 너무 좁게 나온다.
+    그래서 "사용자"를 복원 추출하고, 뽑힌 사용자의 모든 행을 함께 가져온다.
+    pairs 는 [("M1", "M0"), ...]: 같은 재표본에서 두 모델의 차이(앞 - 뒤)를 구해 "개선"의 구간을 낸다.
+    """
+    rng = np.random.default_rng(seed)
+    rows_of_user = df.groupby("user_id").indices  # user_id -> 그 사용자의 행 위치들
+    users = np.array(list(rows_of_user))
+    samples = []
+    for _ in range(n_boot):
+        picked = rng.choice(users, size=len(users), replace=True)
+        idx = np.concatenate([rows_of_user[u] for u in picked])
+        part = df.iloc[idx]
+        one = {}
+        for name, s in scores.items():
+            result = evaluate(part, np.asarray(s)[idx], n)
+            one[f"{name} auc_mean"], one[f"{name} lift_mean"] = result["auc_mean"], result["lift_mean"]
+        for a, b in pairs:
+            one[f"{a}-{b} auc_mean"] = one[f"{a} auc_mean"] - one[f"{b} auc_mean"]
+            one[f"{a}-{b} lift_mean"] = one[f"{a} lift_mean"] - one[f"{b} lift_mean"]
+        samples.append(one)
+    q = pd.DataFrame(samples).quantile([0.025, 0.975])
+    return pd.DataFrame({"ci_low": q.loc[0.025], "ci_high": q.loc[0.975]})
+
+
+def run_evaluation(data: dict, n_boot: int = N_BOOTSTRAP) -> dict:
+    """학습 구간으로 M1~M3 를 학습하고 평가 구간에서 M0~M3 를 비교한다 (노트북과 보고용)."""
+    train_dates, dropped_dates, test_dates = split_dates(reference_dates())
+    train, test = build_dataset(data, train_dates), build_dataset(data, test_dates)
+
+    models = {name: fit_model(train, feats) for name, feats in MODEL_FEATURES.items()}
+    scores = {"M0": baseline_score(test)}
+    scores.update({name: model_score(models[name], test, feats) for name, feats in MODEL_FEATURES.items()})
+
+    return {
+        "train": train, "test": test, "models": models, "scores": scores,
+        "dates": {"train": train_dates, "dropped": dropped_dates, "test": test_dates},
+        "metrics": {name: evaluate(test, s) for name, s in scores.items()},
+        "ci": bootstrap_ci(test, scores, pairs=[("M1", "M0"), ("M2", "M1"), ("M3", "M1")], n_boot=n_boot),
+        "coefficients": {name: coefficients(models[name], feats) for name, feats in MODEL_FEATURES.items()},
+    }

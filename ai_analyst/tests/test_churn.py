@@ -3,6 +3,7 @@
 가짜 데이터: 2026-01-01 ~ 2026-02-28 (59일), 기준일 T = 2026-01-20.
   - 최근 14일 창 = 01-07 ~ 01-20,  라벨 창 = 01-21 ~ 02-03
 """
+import numpy as np
 import pandas as pd
 import pytest
 
@@ -167,8 +168,8 @@ def test_snapshot_and_dataset_shape():
     data = make_data(daily_rows("a", ["2026-01-15", "2026-01-25"]) + daily_rows("b", ["2026-01-15"]))
     snap = churn.build_snapshot(data, T)
     assert list(snap["user_id"]) == ["a", "b"] and list(snap["label"]) == [0, 1]
-    assert set(churn.BASE_FEATURES + churn.GAP_FEATURES) <= set(snap.columns)
-    assert not snap[churn.BASE_FEATURES + churn.GAP_FEATURES].isna().any().any()  # 모델에 넣을 값에 빈칸이 없다
+    assert set(churn.ALL_FEATURES) <= set(snap.columns)
+    assert not snap[churn.ALL_FEATURES].isna().any().any()  # 모델에 넣을 값에 빈칸이 없다
 
     assert "label" not in churn.build_snapshot(data, T, with_label=False).columns  # "현재" 점수용
 
@@ -207,3 +208,116 @@ def test_load_data_raises_when_truncated(monkeypatch):
     monkeypatch.setattr(churn, "run_query", lambda sql: (["user_id"], [["a"], ["b"], ["c"]]))
     with pytest.raises(RuntimeError):
         churn.load_data()
+
+
+# ---------- B단계: 기준선, 모델, 지표 ----------
+def synthetic(n_users=400, dates=("2026-01-15", "2026-01-22"), seed=0):
+    """신호를 심은 합성 데이터: 마지막 활동 후 일수가 길수록 라벨=1 이 될 확률이 높다."""
+    rng = np.random.default_rng(seed)
+    rows = []
+    for t in dates:
+        days = rng.integers(0, 14, n_users)
+        a7 = rng.integers(0, 8, n_users)
+        a14 = a7 + rng.integers(0, 8, n_users)
+        rows.append(pd.DataFrame({
+            "user_id": [f"u{i}" for i in range(n_users)], "ref_date": pd.Timestamp(t),
+            "days_since_last_core_activity": days, "active_days_7": a7, "active_days_14": a14,
+            "activity_change": 2 * a7 - a14, "purchased_14d": rng.integers(0, 2, n_users),
+            "n_following": rng.integers(0, 4, n_users), "no_follow": rng.integers(0, 2, n_users),
+            "is_subscribed": rng.integers(0, 2, n_users), "min_comm_gap": rng.integers(0, 9, n_users),
+            "label": (rng.random(n_users) < 0.05 + 0.04 * days).astype(int)}))
+    return pd.concat(rows, ignore_index=True)
+
+
+def test_main_model_uses_activity_features_only():
+    # 팔로우/구독 특징은 날짜 대리변수가 될 수 있어 주 모델(M1)에 넣지 않는다
+    assert not set(churn.MODEL_FEATURES["M1"]) & set(churn.RELATION_FEATURES + churn.GAP_FEATURES)
+    assert set(churn.RELATION_FEATURES) <= set(churn.MODEL_FEATURES["M2"])
+    assert set(churn.GAP_FEATURES) <= set(churn.MODEL_FEATURES["M3"])
+
+
+def test_baseline_is_days_since_last_activity():
+    df = pd.DataFrame({"days_since_last_core_activity": [0, 13, 5]})
+    assert list(churn.baseline_score(df)) == [0.0, 13.0, 5.0]
+
+
+def test_precision_at_n():
+    labels = [1, 0, 1, 0, 0]
+    scores = [0.9, 0.8, 0.7, 0.2, 0.1]
+    assert churn.precision_at_n(labels, scores, 2) == 0.5
+    assert churn.precision_at_n(labels, scores, 3) == pytest.approx(2 / 3)
+    assert churn.precision_at_n(labels, scores, 99) == pytest.approx(2 / 5)  # n 이 인원보다 크면 전체
+
+
+def test_precision_at_n_ties_use_expected_value():
+    # 상위 2명을 뽑는데 1등 뒤의 3명이 동점(그중 양성 1명) -> 남은 1자리의 기대값은 1/3
+    assert churn.precision_at_n([1, 1, 0, 0], [9, 5, 5, 5], 2) == pytest.approx((1 + 1 / 3) / 2)
+    # 행 순서를 바꿔도 값이 같다 (누가 먼저 적혀 있느냐에 좌우되지 않는다)
+    assert churn.precision_at_n([0, 0, 1, 1], [5, 5, 5, 9], 2) == pytest.approx((1 + 1 / 3) / 2)
+
+
+def test_per_date_auc_removes_date_effect():
+    """날짜 안에서는 전혀 구분하지 못하는 점수(날짜별 상수)도, 합쳐서 재면 AUC 가 높게 나온다."""
+    df = pd.DataFrame({
+        "ref_date": [pd.Timestamp("2026-02-26")] * 4 + [pd.Timestamp("2026-03-05")] * 4,
+        "label": [1, 0, 0, 0, 1, 1, 1, 0]})
+    scores = [0.2] * 4 + [0.8] * 4  # "3월 5일이 더 위험하다"만 아는 점수
+    result = churn.evaluate(df, scores, n=2)
+
+    assert list(result["by_date"]["auc"]) == [0.5, 0.5] and result["auc_mean"] == 0.5
+    assert result["auc_pooled"] > 0.7  # 날짜 효과만으로 부풀려진 값
+    # lift = precision / 그 기준일의 양성 비율. 날짜 안에서 못 맞히면 1배
+    assert list(result["by_date"]["lift"]) == pytest.approx([1.0, 1.0])
+    assert list(result["by_date"]["top_share"]) == [0.5, 0.5]
+
+
+def test_evaluate_perfect_scores():
+    df = pd.DataFrame({"ref_date": [pd.Timestamp("2026-02-26")] * 4, "label": [1, 0, 0, 0]})
+    row = churn.evaluate(df, [0.9, 0.3, 0.2, 0.1], n=1)["by_date"].iloc[0]
+    assert row["auc"] == 1.0 and row["precision_at_n"] == 1.0
+    assert row["base_rate"] == 0.25 and row["lift"] == 4.0
+
+
+def test_model_smoke_finds_planted_signal():
+    train, test = synthetic(seed=0), synthetic(seed=1)
+    features = churn.MODEL_FEATURES["M1"]
+    model = churn.fit_model(train, features)
+    scores = churn.model_score(model, test, features)
+
+    assert ((scores >= 0) & (scores <= 1)).all()
+    assert churn.evaluate(test, scores)["auc_mean"] > 0.65  # 심어 둔 신호를 찾는다
+    assert churn.coefficients(model, features)["days_since_last_core_activity"] > 0
+
+
+def test_standardization_uses_train_statistics_only():
+    train, test = synthetic(seed=0), synthetic(seed=1)
+    test = test.assign(days_since_last_core_activity=test["days_since_last_core_activity"] + 100)  # 평가 구간만 크게 다름
+    features = churn.MODEL_FEATURES["M1"]
+    model = churn.fit_model(train, features)
+    scaler = model[0]
+
+    np.testing.assert_allclose(scaler.mean_, train[features].mean().to_numpy())
+    churn.model_score(model, test, features)
+    np.testing.assert_allclose(scaler.mean_, train[features].mean().to_numpy())  # 점수를 매겨도 다시 맞추지 않는다
+
+
+def test_bootstrap_ci_is_reproducible_and_brackets_point_estimate():
+    test = synthetic(n_users=150, seed=1)
+    scores = {"M0": churn.baseline_score(test), "RANDOM": np.random.default_rng(5).random(len(test))}
+    ci = churn.bootstrap_ci(test, scores, pairs=[("M0", "RANDOM")], n_boot=60, seed=3)
+    again = churn.bootstrap_ci(test, scores, pairs=[("M0", "RANDOM")], n_boot=60, seed=3)
+
+    pd.testing.assert_frame_equal(ci, again)  # 시드가 같으면 결과가 같다
+    point = churn.evaluate(test, scores["M0"])["auc_mean"]
+    assert ci.loc["M0 auc_mean", "ci_low"] < point < ci.loc["M0 auc_mean", "ci_high"]
+    assert ci.loc["M0-RANDOM auc_mean", "ci_low"] > 0  # 신호가 있는 점수는 무작위보다 확실히 낫다
+
+
+def test_bootstrap_resamples_users_not_rows(monkeypatch):
+    test = synthetic(n_users=50, seed=1)
+    sizes = []
+    real = churn.evaluate
+    monkeypatch.setattr(churn, "evaluate", lambda df, s, n=100: sizes.append(len(df)) or real(df, s, n))
+    churn.bootstrap_ci(test, {"M0": churn.baseline_score(test)}, pairs=[], n_boot=5)
+    # 사용자 50명을 복원 추출하면 사용자당 2행(기준일 2개)이 통째로 따라온다 -> 항상 100행
+    assert sizes == [100] * 5
