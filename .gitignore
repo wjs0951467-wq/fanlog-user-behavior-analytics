@@ -23,3 +23,5 @@ Thumbs.db
 # 실행 로그
 *.log
 streamlit.log
+
+.pytest_cache/

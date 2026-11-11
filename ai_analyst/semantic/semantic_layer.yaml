@@ -1,0 +1,81 @@
+# FANLOG 시맨틱 레이어 v0 (초안)
+#
+# 이 파일은 "비즈니스 용어 → 정확한 SQL 정의" 사전이고, 매 질문마다 프롬프트에 통째로 들어갑니다.
+# 모델의 똑똑함보다 이 파일의 정확도가 답변 품질을 더 크게 좌우합니다.
+#
+# ⚠️ [검증 필요] = 컬럼 이름만 보고 추정한 부분입니다. schema_profile.json 의 실제 값과 대조해서
+#    직접 고치세요. (Day 1 의 가장 중요한 숙제입니다.)
+
+conventions:
+  - 날짜 기준 분석은 항상 *_kst 날짜 컬럼(예 event_date_kst, activity_date_kst)을 쓴다.
+    *_utc timestamp 컬럼으로 날짜를 자르지 않는다 (한국 날짜와 하루씩 어긋남).
+  - "'최근 N일', '이번 달', '어제'의 기준일은 CURRENT_DATE 가 아니라 해당 테이블 날짜 컬럼의 MAX 값으로 잡는다.
+    (합성 데이터라 현재 날짜와 데이터 기간이 다를 수 있음) [검증 필요: schema_profile.json 의 max 날짜 확인]"
+  - 사용자 수를 셀 때는 기본적으로 탈퇴 사용자(dim_user.is_deleted = true)를 제외한다. [검증 필요]
+  - 금액 단위는 원(KRW). [검증 필요]
+  - ID 목록을 그대로 나열하지 말고, 사람이 읽을 수 있는 이름(artist_name 등)과 집계 값을 보여준다.
+
+table_guide:
+  dim_user: 사용자 1행 = 1명. 가입일(signup_date_kst), 국가 그룹, 유입 채널, 주 사용 기기.
+  dim_artist: 아티스트 마스터 (artist_name, artist_type, debut_year).
+  dim_content: 아티스트가 올린 콘텐츠(content_type, 게시일).
+  dim_product: 상품 마스터 (product_type, price, 출시일).
+  dim_activity_phase: 아티스트 활동기(phase_type, 시작/종료일).
+  bridge_user_artist_follow: 사용자-아티스트 팔로우 이력. 1행 = 1번의 팔로우. 언팔로우하면 unfollowed_at_utc 에 시각이 찍힌다.
+  fact_user_event: 사용자 행동 로그(조회/좋아요/댓글 등, event_name 으로 구분). 가장 큰 테이블이므로 반드시 날짜 조건을 건다.
+  fact_artist_activity: 아티스트 쪽 활동(게시글/메시지/라이브 등, activity_type 으로 구분).
+  fact_message_subscription: 아티스트 메시지 구독(plan_type). 해지 시 ended_at_utc 와 cancel_reason_category 기록.
+  fact_order: 주문 헤더 (status, order_amount, refund_amount).
+  fact_order_item: 주문 상세. transaction_id 로 fact_order 와, product_id 로 dim_product 와 조인.
+  mart_user_daily: 사용자 x 일자 단위 집계 (핵심 활동 여부, 구매 여부, activity_status, 마지막 활동 후 경과일).
+    사용자 상태/휴면/리텐션 질문은 fact_user_event 를 직접 집계하지 말고 이 테이블을 우선 사용한다.
+  mart_artist_daily: 아티스트 x 일자 단위 활동/팔로우 증감 집계.
+  mart_content_performance: 콘텐츠별 조회/참여 성과 집계 (engagement_rate 포함).
+  mart_commerce_funnel: 사용자 x 상품 단위 구매 퍼널 (장바구니 -> 결제 시작 -> 구매).
+
+metrics:
+  current_followers:
+    definition: 현재 팔로워 수
+    sql_hint: bridge_user_artist_follow 에서 unfollowed_at_utc IS NULL 인 행의 (user_id) 수. 아티스트별이면 artist_id 로 GROUP BY.
+  active_subscription:
+    definition: 현재 유지 중인 메시지 구독
+    sql_hint: fact_message_subscription 에서 ended_at_utc IS NULL.
+  net_revenue:
+    definition: 순매출 = 주문금액 - 환불금액
+    sql_hint: "fact_order 에서 SUM(order_amount - COALESCE(refund_amount, 0)).
+      TODO: 어떤 status 값만 매출로 인정할지 schema_profile.json 의 fact_order.status 값을 보고 여기에 직접 적을 것.
+      (예: status = '값' 만 포함)"
+  purchase_conversion:
+    definition: 구매 전환율
+    sql_hint: "mart_commerce_funnel 에서 reached_purchase 의 비율. 아직 진행 중인 퍼널이 섞이면 전환율이 낮게 나오므로
+      is_closed_funnel_complete = true 인 행만 쓰는 것이 맞을 가능성이 높다. [검증 필요]"
+  activity_status:
+    definition: 사용자의 일자별 상태 (mart_user_daily.activity_status)
+    sql_hint: "TODO: schema_profile.json 에서 이 컬럼의 실제 값 목록을 확인하고, 각 값의 의미(예: 활성/휴면/이탈)와
+      판정 기준(며칠 무활동인지)을 여기에 직접 적을 것. FANLOG 프로젝트에서 정한 기준을 그대로 옮기면 된다."
+  dormant_user:
+    definition: 휴면 사용자
+    sql_hint: "TODO: 위 activity_status 정의를 기반으로 작성. 가장 최근 날짜(MAX(activity_date_kst))의 행만 봐야 '현재 휴면'이 된다."
+  retention_d7:
+    definition: 가입 7일 후 리텐션
+    sql_hint: "dim_user.signup_date_kst 코호트별로, signup_date_kst + 7일에 mart_user_daily.had_core_activity = true 인 사용자 비율.
+      분모는 가입 후 7일이 이미 지난 코호트만 포함해야 한다. [검증 필요]"
+
+examples:
+  - question: 아티스트별 현재 팔로워 수 상위 5명은?
+    sql: |
+      SELECT a.artist_name, COUNT(*) AS current_followers
+      FROM bridge_user_artist_follow f
+      JOIN dim_artist a ON a.artist_id = f.artist_id
+      WHERE f.unfollowed_at_utc IS NULL
+      GROUP BY a.artist_name
+      ORDER BY current_followers DESC
+      LIMIT 5
+  - question: 월별 신규 가입자 수를 유입 채널별로 보여줘
+    sql: |
+      SELECT date_trunc('month', signup_date_kst)::date AS month,
+             acquisition_channel,
+             COUNT(*) AS signups
+      FROM dim_user
+      GROUP BY 1, 2
+      ORDER BY 1, 2
