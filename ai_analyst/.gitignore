@@ -2,3 +2,5 @@
 __pycache__/
 .venv/
 semantic/schema_profile.json
+# 에이전트 질문별 호출 기록 (app/agent.py 가 씀)
+logs/

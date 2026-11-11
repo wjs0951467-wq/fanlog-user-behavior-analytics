@@ -45,3 +45,43 @@ def complete(system: str, messages: list[dict], json_mode: bool = False) -> dict
     text = resp.choices[0].message.content or ""
     tokens = resp.usage.total_tokens if resp.usage else 0
     return {"text": text, "tokens": tokens}
+
+
+def complete_with_tools(system: str, messages: list[dict], tools: list[dict], allow_tools: bool = True) -> dict:
+    """도구 호출(function calling)이 가능한 LLM 1회 호출.
+
+    반환: {"text": 답변 문자열, "tool_calls": [{"id", "name", "arguments"(JSON 문자열)}], "tokens"}
+    tool_calls 가 비어 있으면 모델이 도구 없이 최종 답을 한 것이다.
+    allow_tools=False 면 도구를 못 부르게 막는다 (예산이 끝나 최종 답만 받아야 할 때).
+    """
+    model = os.getenv("FANLOG_MODEL")
+    if not model:
+        raise RuntimeError(".env 에 FANLOG_MODEL (사용 가능한 모델명)을 설정하세요.")
+    resp = _client().chat.completions.create(
+        model=model,
+        messages=[{"role": "system", "content": system}, *messages],
+        tools=tools,
+        tool_choice="auto" if allow_tools else "none",
+        # 한 번에 도구를 여러 개 부르면 질문당 호출 수의 상한을 정할 수 없다. 한 단계에 하나만 부르게 한다.
+        parallel_tool_calls=False,
+    )
+    message = resp.choices[0].message
+    calls = [{"id": c.id, "name": c.function.name, "arguments": c.function.arguments}
+             for c in (message.tool_calls or [])]
+    return {"text": message.content or "", "tool_calls": calls,
+            "tokens": resp.usage.total_tokens if resp.usage else 0}
+
+
+# 아래 두 함수는 "도구를 불렀다 / 도구 결과가 이렇다"를 대화 이력에 넣는 OpenAI 형식이다.
+# 이 형식을 llm.py 안에 가둬 두면, LLM 업체를 바꿀 때 agent.py 를 고치지 않아도 된다.
+def assistant_message(reply: dict) -> dict:
+    """complete_with_tools 의 결과를 대화 이력용 assistant 메시지로 바꾼다."""
+    return {"role": "assistant", "content": reply["text"] or None,
+            "tool_calls": [{"id": c["id"], "type": "function",
+                            "function": {"name": c["name"], "arguments": c["arguments"]}}
+                           for c in reply["tool_calls"]]}
+
+
+def tool_message(call_id: str, content: str) -> dict:
+    """도구 실행 결과를 대화 이력용 tool 메시지로 바꾼다. call_id 로 어느 호출의 결과인지 짝을 맞춘다."""
+    return {"role": "tool", "tool_call_id": call_id, "content": content}
