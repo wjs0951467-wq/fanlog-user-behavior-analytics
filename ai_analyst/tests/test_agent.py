@@ -571,3 +571,22 @@ def test_guard_never_raises_through_ask_so_usage_is_kept(monkeypatch):
     monkeypatch.setattr(text2sql, "load_profile", lambda: {})
     out = text2sql.ask("질문", summarize_result=False)
     assert out["usage"]["llm_calls"] == 3 and "가드레일" in out["error"] and len(calls) == 3
+
+
+def test_agent_loop_shows_bad_request_diagnostics_on_screen_result_and_log(monkeypatch):
+    from .test_text2sql import api_error, assert_nothing_secret
+    use_llm(monkeypatch, api_error(code="invalid_value", param="tools[2].function.name"))
+    out = run_agent("질문", tools={"echo": fake_tool()})
+    expected = "[LLM 오류] BadRequestError (code=invalid_value, param=tools[2].function.name)"
+    assert out["answer"] is None and out["error"] == expected and out["usage"]["llm_calls"] == 1
+    assert agent.build_log_record(out)["error"] == expected  # 로그에도 같은 문장
+    logged = "".join(p.read_text(encoding="utf-8") for p in agent.LOG_DIR.glob("agent_*.jsonl"))
+    assert expected in logged
+    assert_nothing_secret(json.dumps(out, ensure_ascii=False, default=str) + logged)
+
+
+def test_agent_loop_other_api_errors_keep_only_the_type_name(monkeypatch):
+    import openai
+    from .test_text2sql import api_error
+    use_llm(monkeypatch, api_error(cls=openai.RateLimitError, status=429))
+    assert run_agent("질문", tools={"echo": fake_tool()})["error"] == "[LLM 오류] RateLimitError"

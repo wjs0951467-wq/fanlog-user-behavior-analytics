@@ -14,6 +14,8 @@ import sys
 from functools import lru_cache
 from pathlib import Path
 
+from openai import BadRequestError
+
 from .db import run_query
 from .llm import complete
 from .safety import clip_deep, mask_ids, mask_rows
@@ -250,9 +252,31 @@ def db_error_text(e: Exception, sql: str = "") -> str:
 DB_CONNECTION_ERROR = "[DB 오류] 데이터베이스 접속 문제로 실행하지 못했습니다."
 
 
+# 400 오류의 진단 정보(code, param)로 허용하는 모양: 짧은 식별자뿐 (영문, 숫자, 밑줄, 점, 대괄호, 하이픈, 60자 이하).
+# 예: invalid_value, tools[0].function.name, messages[3].content. 문장이나 키 조각이 섞여 들어올 틈을 막는다.
+_SAFE_DIAGNOSTIC = re.compile(r"[A-Za-z0-9_.\[\]-]{1,60}")
+
+
+def _safe_diagnostic(value):
+    """code/param 값이 안전한 식별자면 그대로, 아니면 None. 키 모양(sk-)은 허용 문자 안이어도 버린다."""
+    if isinstance(value, str) and _SAFE_DIAGNOSTIC.fullmatch(value) and "sk-" not in value.lower():
+        return value
+    return None
+
+
 def llm_error_text(e: Exception) -> str:
-    """LLM 호출 실패는 예외의 종류 이름만 알린다 (예: AuthenticationError, RateLimitError)."""
-    return f"[LLM 오류] {type(e).__name__}"
+    """LLM 호출 실패는 예외의 종류 이름만 알린다 (예: AuthenticationError, RateLimitError).
+
+    예외: openai.BadRequestError(HTTP 400)는 요청 모양이 틀렸다는 뜻이라 원인을 알아야 고칠 수 있다.
+    이때만 code 와 param 을 안전한 식별자일 때 덧붙인다. 오류 문장(message)과 응답 본문은 어떤 경우에도 읽지 않는다
+    (키 조각이 섞일 수 있다). 클래스가 BadRequestError 이고 status_code 가 정확히 400 일 때만 읽는다 (이름만 같은 객체는 믿지 않는다).
+    """
+    name = type(e).__name__
+    if isinstance(e, BadRequestError) and getattr(e, "status_code", None) == 400:
+        parts = [f"{key}={value}" for key in ("code", "param") if (value := _safe_diagnostic(getattr(e, key, None)))]
+        if parts:
+            return f"[LLM 오류] {name} ({', '.join(parts)})"
+    return f"[LLM 오류] {name}"
 
 
 def build_retry_message(error_type: str, sql: str | None, error_text: str) -> str:

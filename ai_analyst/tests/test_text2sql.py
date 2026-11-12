@@ -567,3 +567,123 @@ def test_exactly_max_rows_gets_a_note(llm, db, n, noted):
     assert "정확히 1000행이라 더 있을 수 있음" in text2sql.ROW_CAP_NOTE
     if not noted:
         assert out["row_cap_note"] is None
+
+
+# =====================================================================
+# 400 오류(BadRequestError)에 한해 code, param 진단 정보를 보여준다 (message 와 본문은 계속 숨긴다)
+# =====================================================================
+import httpx  # noqa: E402
+import openai  # noqa: E402
+
+SECRET_MESSAGE = "SECRET_MESSAGE_TEXT sk-proj-abcdefghijklmnopqrstuvwxyz0123456789ABCDEFGH"
+SECRET_BODY = "SECRET_BODY_TEXT"
+
+
+def api_error(cls=openai.BadRequestError, status=400, code="invalid_value", param="tools[0]", **extra):
+    """진짜 openai 오류 객체를 만든다 (네트워크 없음). message 와 본문에는 새면 안 되는 문장을 넣어 둔다."""
+    response = httpx.Response(status, request=httpx.Request("POST", "https://api.openai.com/v1/chat/completions"))
+    body = {"code": code, "param": param, "message": SECRET_MESSAGE, "detail": SECRET_BODY, **extra}
+    return cls(SECRET_MESSAGE, response=response, body=body)
+
+
+def assert_nothing_secret(text):
+    assert "SECRET" not in text and "sk-" not in text
+
+
+@pytest.mark.parametrize("code, param, expected", [
+    ("invalid_value", "tools[0].function.name", "[LLM 오류] BadRequestError (code=invalid_value, param=tools[0].function.name)"),
+    ("invalid_request_error", "messages[3].content", "[LLM 오류] BadRequestError (code=invalid_request_error, param=messages[3].content)"),
+    ("unsupported_parameter", "max_tokens", "[LLM 오류] BadRequestError (code=unsupported_parameter, param=max_tokens)"),
+    ("model_not_found", None, "[LLM 오류] BadRequestError (code=model_not_found)"),
+    (None, "response_format", "[LLM 오류] BadRequestError (param=response_format)"),
+    (None, None, "[LLM 오류] BadRequestError"),
+])
+def test_bad_request_shows_safe_code_and_param(code, param, expected):
+    text = text2sql.llm_error_text(api_error(code=code, param=param))
+    assert text == expected
+    assert_nothing_secret(text)
+
+
+def test_a_param_that_looks_like_a_path_is_shown():
+    assert text2sql.llm_error_text(api_error(param="messages[3].content")).endswith("param=messages[3].content)")
+
+
+@pytest.mark.parametrize("bad", [
+    "sk-proj-" + "a1B2" * 20,                       # 키 모양 + 61자 넘김
+    "sk-abc123",                                    # 짧아도 키 모양(sk-)이면 생략
+    "Invalid value: the tool name is wrong",       # 문장(공백)
+    "a" * 61,                                       # 길이 61
+    "한글코드", "a/b", "a;b", "a b", "a" + chr(10) + "b", "a,b", "(x)",
+    "", ["a"], {"a": "b"},                          # SDK 는 문자열이 아닌 값을 글자로 바꿔 담는다: 모양이 안 맞으면 생략
+])
+def test_unsafe_code_and_param_values_are_omitted(bad):
+    text = text2sql.llm_error_text(api_error(code=bad, param=bad))
+    assert text == "[LLM 오류] BadRequestError"
+
+
+def test_one_unsafe_field_does_not_hide_the_safe_one():
+    text = text2sql.llm_error_text(api_error(code="invalid_value", param="sk-proj-" + "a" * 70))
+    assert text == "[LLM 오류] BadRequestError (code=invalid_value)"
+
+
+def test_length_limit_is_60():
+    assert "param=" + "a" * 60 + ")" in text2sql.llm_error_text(api_error(code=None, param="a" * 60))
+    assert "param=" not in text2sql.llm_error_text(api_error(code=None, param="a" * 61))
+
+
+def test_missing_attributes_are_tolerated():
+    e = api_error()
+    del e.code
+    del e.param
+    assert text2sql.llm_error_text(e) == "[LLM 오류] BadRequestError"
+
+
+@pytest.mark.parametrize("cls, status", [
+    (openai.AuthenticationError, 401), (openai.PermissionDeniedError, 403), (openai.NotFoundError, 404),
+    (openai.RateLimitError, 429), (openai.InternalServerError, 500), (openai.InternalServerError, 503),
+])
+def test_other_http_errors_show_only_the_type_name(cls, status):
+    text = text2sql.llm_error_text(api_error(cls=cls, status=status, code="invalid_value", param="tools[0]"))
+    assert text == f"[LLM 오류] {cls.__name__}"
+
+
+def test_a_generic_status_error_with_400_is_not_bad_request():
+    """BadRequestError 클래스가 아니면 status 가 400 이어도 종류 이름만 (code, param 을 읽지 않는다)."""
+    text = text2sql.llm_error_text(api_error(cls=openai.APIStatusError, status=400))
+    assert text == "[LLM 오류] APIStatusError"
+
+
+@pytest.mark.parametrize("status", [None, 200, 401, 422, 500, "400"])
+def test_a_bad_request_like_object_without_a_400_status_shows_only_the_type_name(status):
+    e = api_error()
+    e.status_code = status
+    assert text2sql.llm_error_text(e) == "[LLM 오류] BadRequestError"
+
+
+def test_a_look_alike_class_is_not_trusted():
+    class BadRequestError(Exception):  # 이름만 같고 openai 의 클래스가 아니다
+        status_code = 400
+        code = "invalid_value"
+        param = "tools[0]"
+
+    assert text2sql.llm_error_text(BadRequestError(SECRET_MESSAGE)) == "[LLM 오류] BadRequestError"
+
+
+@pytest.mark.parametrize("bad", [12, 4.5, True, None, ["a"], {"a": "b"}, b"x", object()])
+def test_non_string_attribute_values_are_omitted(bad):
+    """SDK 를 거치지 않고 속성에 문자열이 아닌 값이 직접 들어 있어도 (다른 버전, 가짜 객체) 보이지 않는다."""
+    e = api_error()
+    e.code, e.param = bad, bad
+    assert text2sql.llm_error_text(e) == "[LLM 오류] BadRequestError"
+
+
+def test_ordinary_exceptions_are_unchanged():
+    assert text2sql.llm_error_text(RuntimeError(SECRET_MESSAGE)) == "[LLM 오류] RuntimeError"
+
+
+def test_ask_reports_the_bad_request_diagnostics_in_error_and_is_not_retried(llm, db):
+    llm.replies = [api_error(code="invalid_value", param="tools[0].function.parameters")]
+    out = ask("가입자 수는?")
+    assert out["error"] == "[LLM 오류] BadRequestError (code=invalid_value, param=tools[0].function.parameters)"
+    assert out["usage"]["llm_calls"] == 1 and out["attempts"] == []
+    assert_nothing_secret(json.dumps(out, ensure_ascii=False, default=str))

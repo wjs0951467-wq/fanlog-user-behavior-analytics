@@ -458,3 +458,12 @@ def test_hold_result_has_its_own_alternatives_not_these(report, monkeypatch):
     monkeypatch.setattr(tools, "complete", lambda *a, **k: pytest.fail("LLM 호출 금지"))
     out = tools.run_recommend_actions({"tier": "상위 10%군", "purchase": "없음", "gap_group": "팔로우 없음"})
     assert out["status"] == "hold" and "sample_size" not in out["for_llm"]
+
+
+def test_recommend_actions_shows_bad_request_diagnostics_only(report, monkeypatch):
+    from .test_text2sql import api_error, assert_nothing_secret
+    use_complete(monkeypatch, api_error(code="invalid_value", param="response_format"))
+    out = tools.run_recommend_actions(SEG)
+    assert out["for_llm"]["error"] == "[LLM 오류] BadRequestError (code=invalid_value, param=response_format)"
+    assert out["usage"]["llm_calls"] == 1
+    assert_nothing_secret(json.dumps(out, ensure_ascii=False, default=str))
