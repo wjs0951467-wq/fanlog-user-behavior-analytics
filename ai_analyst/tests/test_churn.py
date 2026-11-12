@@ -205,7 +205,7 @@ def test_load_sql_passes_guard():
 
 def test_load_data_raises_when_truncated(monkeypatch):
     monkeypatch.setattr(churn, "LOAD_MAX_ROWS", 3)
-    monkeypatch.setattr(churn, "run_query", lambda sql: (["user_id"], [["a"], ["b"], ["c"]]))
+    monkeypatch.setattr(churn, "run_query", lambda sql, max_rows=None: (["user_id"], [["a"], ["b"], ["c"]]))
     with pytest.raises(RuntimeError):
         churn.load_data()
 
@@ -475,3 +475,29 @@ def test_churn_report_always_pairs_segments_with_evidence(full_data):
     assert list(report["tier_evidence"]["tier"]) == churn.TIERS  # 군의 의미를 보여주는 근거 표가 함께 온다
     assert churn.CAVEAT in report["notes"]
     assert "인과가 아니다" in churn.CAVEAT and "이탈 위험 순위가 높은 팬" in churn.CAVEAT
+
+
+# ---------- run_query 의 행 수 상한과 맞물리는지 ----------
+def test_load_data_passes_its_raised_row_cap_to_run_query(monkeypatch):
+    """run_query 는 기본 1000행에서 자른다. churn 은 가드레일과 같은 상한(LOAD_MAX_ROWS)을 넘겨야 13만 행을 읽을 수 있다."""
+    seen = []
+
+    def fake(sql, max_rows=None):
+        seen.append((sql, max_rows))
+        raise RuntimeError("여기까지만 확인")
+
+    monkeypatch.setattr(churn, "run_query", fake)
+    with pytest.raises(RuntimeError, match="여기까지만 확인"):
+        churn.load_data()
+    sql, max_rows = seen[0]
+    assert max_rows == churn.LOAD_MAX_ROWS == 200_000
+    assert sql.endswith(f"LIMIT {churn.LOAD_MAX_ROWS}")
+
+
+def test_load_data_raises_when_run_query_reports_truncation(monkeypatch):
+    from app.db import Rows
+    rows = Rows([["a"], ["b"]])  # 행 수는 상한보다 한참 적지만, run_query 가 잘랐다고 표시했다
+    rows.truncated = True
+    monkeypatch.setattr(churn, "run_query", lambda sql, max_rows=None: (["user_id"], rows))
+    with pytest.raises(RuntimeError, match="잘렸"):
+        churn.load_data()

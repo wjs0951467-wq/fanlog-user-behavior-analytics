@@ -52,6 +52,8 @@ def show_ask_data(step: dict) -> None:
     else:
         df, hidden = view.result_table(r["columns"], r["rows"])
         st.caption(md(f"행 수 {r['row_count']:,}"))
+        if r.get("truncated"):
+            st.warning(md(f"결과가 상한에서 잘렸습니다. 표에는 앞의 {r['row_count']:,}행만 있습니다."))
         _frame(df)
         if hidden:
             st.caption(md(f"개인 식별 컬럼({', '.join(hidden)})은 화면에서 숨겼습니다."))

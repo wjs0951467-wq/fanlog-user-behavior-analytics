@@ -251,6 +251,7 @@ def ask(question: str, summarize_result: bool = True) -> dict:
     """
     result = {"question": question, "sql": None, "columns": [], "rows": [], "row_count": 0,
               "assumptions": [], "summary": None, "attempts": [], "error": None,
+              "truncated": False,  # run_query 가 상한에서 행을 잘랐는가 (가드레일의 LIMIT 과 별개인 2차 안전장치)
               "usage": {"llm_calls": 0, "tokens": 0}}
     system = build_system_prompt()
     profile = load_profile()
@@ -307,7 +308,8 @@ def ask(question: str, summarize_result: bool = True) -> dict:
                 else:
                     # 성공. 0행도 성공이다: 재시도하면 모델이 조건을 억지로 바꿔 "틀린 답"을 만들 수 있다.
                     result.update(sql=safe_sql, columns=columns, rows=rows, row_count=len(rows),
-                                  assumptions=parsed["assumptions"])
+                                  assumptions=parsed["assumptions"],
+                                  truncated=bool(getattr(rows, "truncated", False)))
                     if not rows:
                         result["summary"] = NO_DATA_SUMMARY  # LLM 을 부르지 않는다 (호출 절약, 숫자 지어낼 여지 없음)
                     elif summarize_result:

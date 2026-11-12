@@ -67,6 +67,7 @@ def run_ask_data(args: dict) -> dict:
         "sql": out["sql"], "columns": out["columns"], "row_count": out["row_count"],
         "rows": _trim_rows(out["rows"]),
         "rows_shown": min(out["row_count"], ROWS_FOR_LLM),
+        "truncated": out.get("truncated", False),  # 상한에서 잘린 결과면 모델도 "일부만 봤다"는 것을 알아야 한다
         "assumptions": out["assumptions"], "error": out["error"],
         # attempts(실패한 SQL 과 에러 원문)는 모델에게 주지 않는다. 화면과 로그에서만 본다.
     }

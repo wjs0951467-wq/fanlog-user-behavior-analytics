@@ -444,3 +444,19 @@ def test_tool_history_shows_every_step_with_reason(monkeypatch):
     assert history["도구"].tolist() == ["ask_data", "get_churn_segments"]
     assert history["이유(reason)"].tolist() == ["첫 번째 이유", "두 번째 이유"]
     assert json.loads(history["인자"][0]) == {"question": "a"}  # reason 은 인자가 아니라 따로 기록된다
+
+
+# ---------- 행 수 상한에서 잘린 결과 ----------
+def test_truncated_result_shows_a_warning(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        columns=["n"], rows=[[1], [2]], row_count=2, truncated=True))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert any("상한에서 잘렸습니다" in w.value for w in at.warning)
+
+
+def test_normal_result_has_no_truncation_warning(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert not any("잘렸습니다" in w.value for w in at.warning)

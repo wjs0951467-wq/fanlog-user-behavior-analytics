@@ -450,3 +450,11 @@ def test_message_helpers_use_openai_format():
         "role": "assistant", "content": "생각",
         "tool_calls": [{"id": "c1", "type": "function", "function": {"name": "ask_data", "arguments": "{}"}}]}
     assert llm.tool_message("c1", "{}") == {"role": "tool", "tool_call_id": "c1", "content": "{}"}
+
+
+# ---------- 행 수 상한에서 잘린 결과 ----------
+def test_ask_data_tells_the_model_when_the_result_was_truncated(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(truncated=True))
+    assert tools.run_ask_data({"question": "q"})["for_llm"]["truncated"] is True
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())  # 예전 형태(키 없음)도 받는다
+    assert tools.run_ask_data({"question": "q"})["for_llm"]["truncated"] is False

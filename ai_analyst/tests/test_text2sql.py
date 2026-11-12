@@ -369,3 +369,40 @@ def test_llm_error_shows_only_the_exception_type_name(llm, db, exc, expected):
 def test_real_system_rules_mention_json():
     # OpenAI json_object 모드의 필수 조건: 프롬프트에 "JSON" 이 있어야 한다
     assert "JSON" in text2sql.SYSTEM_RULES
+
+
+# ---------- 행 수 상한에서 잘린 결과 ----------
+def test_truncated_flag_is_false_for_a_normal_result(llm, db):
+    llm.replies = [json.dumps({"sql": "SELECT COUNT(*) AS n FROM dim_user", "assumptions": ["a"]}), "요약"]
+    db.results = [(["n"], [[10]])]  # 가짜 DB 는 그냥 list 를 돌려준다 (예전 형태 그대로)
+    assert text2sql.ask("q")["truncated"] is False
+
+
+def test_truncated_flag_is_carried_from_run_query(llm, db):
+    from app.db import Rows
+    rows = Rows([[1], [2]])
+    rows.truncated = True
+    llm.replies = [json.dumps({"sql": "SELECT user_id FROM dim_user", "assumptions": ["a"]}), "요약"]
+    db.results = [(["user_id"], rows)]
+    out = text2sql.ask("q")
+    assert out["truncated"] is True and out["row_count"] == 2 and out["error"] is None
+
+
+def test_guard_error_text_reaches_the_retry_prompt_with_the_function_name(llm, db):
+    """막힌 함수 이름이 재시도 프롬프트와 attempts 에 그대로 남아야 모델이 고칠 수 있다."""
+    llm.replies = [json.dumps({"sql": "SELECT query_to_xml('select 1', true, false, '')", "assumptions": []}),
+                   json.dumps({"sql": "SELECT COUNT(*) AS n FROM dim_user", "assumptions": ["a"]}), "요약"]
+    db.results = [(["n"], [[10]])]
+    out = text2sql.ask("q")
+    assert out["error"] is None and len(db.queries) == 1  # 막힌 SQL 은 DB 에 가지 않았다
+    assert out["attempts"][0]["error_type"] == "guard"
+    assert "허용되지 않는 함수: query_to_xml" in out["attempts"][0]["error_message"]
+    retry_prompt = llm.calls[1]["messages"][-1]["content"]
+    assert "허용되지 않는 함수: query_to_xml" in retry_prompt
+
+
+def test_guard_error_after_all_retries_keeps_the_function_name_in_the_final_error(llm, db):
+    bad = json.dumps({"sql": "SELECT some_unknown_function(1)", "assumptions": []})
+    llm.replies = [bad, bad, bad]
+    out = text2sql.ask("q")
+    assert db.queries == [] and "허용되지 않는 함수: some_unknown_function" in out["error"]

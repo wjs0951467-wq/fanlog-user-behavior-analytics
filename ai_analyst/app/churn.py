@@ -113,8 +113,10 @@ def load_data() -> dict:
     """읽기 전용 계정으로 필요한 표 5개를 읽어 {이름: DataFrame} 으로 돌려준다."""
     data = {}
     for name, sql in LOAD_SQL.items():
-        columns, rows = run_query(validate_sql(sql, max_rows=LOAD_MAX_ROWS))
-        if len(rows) >= LOAD_MAX_ROWS:  # LIMIT 에 걸려 조용히 잘린 데이터로 모델을 만들지 않는다
+        # run_query 도 기본 1000행에서 자르므로, 가드레일과 같은 상한을 함께 넘긴다
+        columns, rows = run_query(validate_sql(sql, max_rows=LOAD_MAX_ROWS), max_rows=LOAD_MAX_ROWS)
+        # LIMIT 에 걸렸거나 run_query 가 잘랐으면, 조용히 잘린 데이터로 모델을 만들지 않는다
+        if len(rows) >= LOAD_MAX_ROWS or getattr(rows, "truncated", False):
             raise RuntimeError(f"{name}: 행 수가 상한({LOAD_MAX_ROWS:,})에 닿았습니다. 데이터가 잘렸을 수 있습니다.")
         data[name] = pd.DataFrame(rows, columns=columns)
     return prepare(data)
