@@ -129,6 +129,16 @@ def _evidence(report: dict) -> dict:
             "notes": report["notes"]}
 
 
+def _count(table, sel: dict) -> tuple:
+    """조건(군, 구매 경험, 소통 공백)에 맞는 칸들과 그 인원 합. "전체"인 축은 거르지 않는다."""
+    rows = table
+    for name, value in sel.items():
+        if value != ALL:
+            wanted = PURCHASE_ARG[value] if name == "purchase" else value
+            rows = rows[rows[SEGMENT_COLUMNS[name]] == wanted]
+    return rows, int(rows["n"].sum())
+
+
 def _select(args: dict, report: dict) -> dict:
     """인자(군, 구매 경험, 소통 공백)에 맞는 세그먼트 칸을 고른다. 잘못된 인자는 error_result 로 돌려준다."""
     unknown = sorted(set(args) - set(SEGMENT_ARGS))
@@ -144,15 +154,7 @@ def _select(args: dict, report: dict) -> dict:
     if selection["gap_group"] != ALL and "comm_gap" not in table.columns:
         return error_result("소통 공백 축은 '해당 없음'입니다 (공백 4일 이상 인원이 너무 적다). gap_group 은 '전체'만 됩니다.")
 
-    def count(sel: dict) -> tuple:
-        rows = table
-        for name, value in sel.items():
-            if value != ALL:
-                wanted = PURCHASE_ARG[value] if name == "purchase" else value
-                rows = rows[rows[SEGMENT_COLUMNS[name]] == wanted]
-        return rows, int(rows["n"].sum())
-
-    rows, n = count(selection)
+    rows, n = _count(table, selection)
     out = {"selection": selection, "n": n, "share_pct": _pct(n / report["total"]),
            "population_total": report["total"], "ref_date": str(report["ref_date"])[:10],
            "cells": json.loads(rows.drop(columns="share").to_json(orient="records", force_ascii=False))}
@@ -160,7 +162,7 @@ def _select(args: dict, report: dict) -> dict:
         # 인원이 적은 칸은 우연으로도 크게 흔들린다. 축을 하나씩 합쳐 더 큰 집단을 대안으로 준다.
         out["status"] = "해석 보류"
         out["reason"] = f"인원이 {churn.MIN_CELL}명 미만이다."
-        out["alternatives"] = [{"selection": {**selection, name: ALL}, "n": count({**selection, name: ALL})[1]}
+        out["alternatives"] = [{"selection": {**selection, name: ALL}, "n": _count(table, {**selection, name: ALL})[1]}
                                for name, value in selection.items() if value != ALL]
     return out
 
@@ -185,6 +187,48 @@ def _base_rate(report: dict, tier: str) -> float:
     if tier == ALL:
         return float(evidence["positives"].sum() / evidence["n"].sum())
     return float(evidence.loc[evidence["tier"] == tier, "label_rate"].iloc[0])
+
+
+TOP_TIERS = churn.TIERS[:2]  # 상위 10%군 + 11~30%군 = 상위 30%군
+MERGED_TIER_LABEL = "상위 30%군 (상위 10%군 + 11~30%군)"
+AXIS_LABELS = {"purchase": "구매 경험", "gap_group": "소통 공백"}
+
+
+def _pooled_rate(report: dict, tiers: list) -> float:
+    """여러 군을 합친 기준 비율 = 평가 구간의 (양성 수 합 / 행 수 합). 군 하나나 전체는 _base_rate 와 같은 값이다."""
+    if tiers == [ALL]:
+        return _base_rate(report, ALL)
+    evidence = report["tier_evidence"]
+    picked = evidence[evidence["tier"].isin(tiers)]
+    return float(picked["positives"].sum() / picked["n"].sum())
+
+
+def _alternatives(selection: dict, report: dict, plan: dict) -> list:
+    """표본 수 판정이 "검증할 수 없다"일 때 막다른 길로 끝나지 않게, 코드가 계산해 붙이는 대안 목록이다.
+
+    LLM 은 이 목록을 만들지 않는다. 대안마다 인원과 필요 인원을 같은 계산식(sample_size_plan)으로 다시 구한다.
+    """
+    table, tier = report["segments"], selection["tier"]
+    own_tiers = [tier]
+
+    def plan_for(sel: dict, tiers: list) -> dict:
+        n = sum(_count(table, {**sel, "tier": t})[1] for t in tiers)
+        return actions.sample_size_plan(_pooled_rate(report, tiers), n)
+
+    items = []
+    for axis, label in AXIS_LABELS.items():  # 1) 조건 하나를 빼고 합치기
+        if selection[axis] != ALL:
+            sel = {**selection, axis: ALL}
+            items.append(actions.labeled_plan("조건 빼기", f"{label} 조건을 빼고 합치기", sel, plan_for(sel, own_tiers)))
+    if tier in TOP_TIERS:  # 2) 이웃한 군과 합치기 (상위 30%군)
+        items.append(actions.labeled_plan("군 합치기", MERGED_TIER_LABEL, {**selection, "tier": MERGED_TIER_LABEL},
+                                          plan_for(selection, TOP_TIERS)))
+    if any(v != ALL for v in selection.values()):  # 3) 활동 중인 팬 전체
+        everyone = {name: ALL for name in selection}
+        items.append(actions.labeled_plan("전체 합치기", "활동 중인 팬 전체", everyone, plan_for(everyone, [ALL])))
+    items.append(actions.repeat_rounds(plan))  # 4) 라운드를 여러 번 모으기 (이 세그먼트 그대로)
+    items.append(actions.OBSERVATION_ALTERNATIVE)  # 5) 발송 없이 관찰 분석
+    return items
 
 
 def run_recommend_actions(args: dict) -> dict:
@@ -243,6 +287,8 @@ def run_recommend_actions(args: dict) -> dict:
         "draft": draft,  # 여기까지가 LLM 이 쓴 글
         # 아래는 모두 코드가 붙인다. LLM 이 쓰거나 고칠 수 없다.
         "evidence": evidence["tiers"], "sample_size": plan, "notes": notes,
+        # 검증할 수 없다는 판정이면 코드가 계산한 대안을 붙인다. 검증할 수 있으면 비어 있다.
+        "alternatives": [] if plan["feasible"] else _alternatives(selection, report, plan),
         # 초안에 사실 자료에 없는 숫자가 있으면 표시한다 (경고 전용)
         "unverified_numbers_in_draft": numcheck.unverified_numbers(json.dumps(draft, ensure_ascii=False), [facts]),
     }

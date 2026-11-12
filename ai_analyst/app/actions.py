@@ -97,6 +97,36 @@ def sample_size_plan(base_rate: float, segment_n: int) -> dict:
             "note": "효과 크기(30%, 50% 감소)는 계산을 위한 가정이며 예상 효과가 아니다."}
 
 
+# ---------- "검증할 수 없다"일 때의 대안 (모두 코드가 만든다. LLM 은 만들지 않는다) ----------
+ROUND_DAYS = 14  # 한 번의 A/B 테스트 길이: 효과를 보는 창(이후 14일)과 같다
+RATE_BASIS = "기준 비율은 평가 구간(02-26, 03-05, 03-12)의 실제 비율(양성 수 / 행 수)로 구했다."
+OBSERVATION_ALTERNATIVE = {
+    "kind": "관찰 분석", "label": "발송 없이 기술 통계로 보기",
+    "description": "메시지를 보내지 않고, 군별 / 구매 경험별 / 소통 공백별 실제 비율(이후 14일 비활동 비율)을 관찰해 가설을 다듬는다. "
+                   "필요 인원이 없고 효과를 검증하는 것은 아니다. 군별 실제 비율 표는 get_churn_segments 결과에 항상 있다.",
+}
+
+
+def labeled_plan(kind: str, label: str, selection: dict, plan: dict) -> dict:
+    """대안 하나: 종류, 이름, 대상 조건에 표본 수 계산 결과(sample_size_plan)를 그대로 붙인다."""
+    return {"kind": kind, "label": label, "selection": selection, "rate_basis": RATE_BASIS, **plan}
+
+
+def repeat_rounds(plan: dict) -> dict:
+    """한 번에 모자라면 같은 조건의 A/B 테스트를 여러 번(라운드) 모아 합치는 경우의 횟수를 센다.
+
+    가정: 라운드마다 서로 다른 사람이 같은 비율로 대상이 된다. 같은 사람이 계속 대상이면 성립하지 않는다.
+    """
+    per_round = max(plan["per_group_if_split_in_half"], 1)
+    rounds = [{"assumed_reduction_pct": s["assumed_reduction_pct"], "needed_per_group": s["needed_per_group"],
+               "per_group_per_round": per_round, "rounds_needed": math.ceil(s["needed_per_group"] / per_round),
+               "days": math.ceil(s["needed_per_group"] / per_round) * ROUND_DAYS}
+              for s in plan["scenarios"]]
+    return {"kind": "반복 모집", "label": f"{ROUND_DAYS}일 단위 라운드를 여러 번 모아 합치기", "rounds": rounds,
+            "assumption": "라운드마다 서로 다른 사람이 같은 기준 비율로 대상이 된다고 가정한 계산이다. "
+                          "같은 사람이 반복해서 대상이 되거나 기간이 길어지면 기준 비율이 달라질 수 있다."}
+
+
 # ---------- LLM 출력 검사 ----------
 def _texts(rec: dict) -> dict:
     """검사할 글을 {항목 이름: 글}로 편다."""

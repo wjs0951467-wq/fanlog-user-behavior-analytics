@@ -3,6 +3,8 @@
 에이전트의 최종 답에 나온 숫자가 도구 결과나 질문에 실제로 있는 숫자인지 대조한다.
 없는 숫자는 unverified_numbers 로 돌려줘 화면에 경고로 보여준다. 답을 고치거나 재시도하지는 않는다.
 
+분류 기준: 틀린 답을 통과시키면 "못 잡는 경우", 정상 답에 경고가 붙으면 "거짓 경보".
+
 왜 경고만 하는가: 이 점검은 "그 숫자가 어딘가에 있었는가"만 본다. 아래는 잡지 못한다.
   1) 결과에 있는 숫자를 엉뚱한 대상에 붙인 경우 (at_risk 75명을 "휴면 75명"이라고 쓰기)
   2) "절반", "두 배"처럼 글자로 쓴 숫자
@@ -59,10 +61,13 @@ def unverified_numbers(answer: str, sources: list) -> list[str]:
     허용하는 변환: 쉼표 제거, 비율과 퍼센트 사이의 변환(0.1642 <-> 16.42),
                   답에 쓴 자릿수로 반올림한 값(7.46 -> "7.5").
     """
-    known = set(DEFINITION_NUMBERS)
+    known = set()
     for source in sources:
         known |= known_numbers(source)
-    candidates = known | {k * 100 for k in known} | {k / 100 for k in known}
+    # 비율<->퍼센트 변환(x100, /100)은 도구 결과와 질문에서 나온 숫자에만 적용한다.
+    # 정의 숫자는 있는 그대로만 통과시킨다. 변환까지 허용하면 10 -> 1,000, 14 -> 1,400, 30 -> 3,000 처럼
+    # 근거 없는 큰 숫자가 정의 숫자의 100배라는 이유로 통과하는 구멍이 생긴다.
+    candidates = known | {k * 100 for k in known} | {k / 100 for k in known} | DEFINITION_NUMBERS
 
     missing = []
     for token in extract_numbers(answer):

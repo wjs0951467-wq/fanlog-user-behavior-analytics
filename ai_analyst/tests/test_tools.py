@@ -19,12 +19,12 @@ SMALL_KEY = ("상위 10%군", churn.PURCHASE_LABELS[0], "팔로우 없음")  # �
 SMALL_N = 5
 
 
-def make_report(use_gap=True, small=True, separable_tiers=()):
-    """churn_report() 와 같은 모양의 가짜 결과. 칸마다 100명이고 SMALL_KEY 칸만 5명이다."""
+def make_report(use_gap=True, small=True, separable_tiers=(), cell_n=TOTAL_DEFAULT_CELL):
+    """churn_report() 와 같은 모양의 가짜 결과. 칸마다 cell_n(기본 100)명이고 SMALL_KEY 칸만 5명이다."""
     gaps = churn.GAP_GROUPS if use_gap else [None]
     rows = []
     for tier, purchase, gap in itertools.product(churn.TIERS, churn.PURCHASE_LABELS.values(), gaps):
-        n = SMALL_N if small and (tier, purchase, gap) == SMALL_KEY else TOTAL_DEFAULT_CELL
+        n = SMALL_N if small and (tier, purchase, gap) == SMALL_KEY else cell_n
         row = {"tier": tier, "purchase": purchase, "n": n}
         if use_gap:
             row["comm_gap"] = gap
@@ -362,3 +362,99 @@ def test_invented_number_in_the_draft_is_flagged_but_not_blocked(report, monkeyp
 def test_clean_draft_has_no_unverified_numbers(report, monkeypatch):
     use_complete(monkeypatch, reply())
     assert tools.run_recommend_actions(SEG)["for_llm"]["unverified_numbers_in_draft"] == []
+
+
+# ---------- "검증할 수 없다"일 때의 대안 (결정 3: 코드가 계산해서 붙인다) ----------
+def alternatives_of(args, monkeypatch, report_obj=None):
+    monkeypatch.setattr(tools, "get_report", lambda: report_obj or make_report())
+    use_complete(monkeypatch, reply())
+    out = tools.run_recommend_actions(args)
+    assert out["status"] == "ok"
+    return out["for_llm"]
+
+
+def kinds(result):
+    return [a["kind"] for a in result["alternatives"]]
+
+
+def test_alternatives_are_attached_when_verdict_is_not_verifiable(monkeypatch):
+    result = alternatives_of(SEG, monkeypatch)  # 300명(그룹당 150명)이라 589명이 필요한 검증은 불가능하다
+    assert result["sample_size"]["feasible"] is False
+    assert kinds(result) == ["조건 빼기", "군 합치기", "전체 합치기", "반복 모집", "관찰 분석"]
+
+
+def test_merged_tier_alternative_recomputes_people_and_rate(monkeypatch):
+    result = alternatives_of(SEG, monkeypatch)
+    merged = next(a for a in result["alternatives"] if a["kind"] == "군 합치기")
+
+    # 상위 10%군(구매 있음 300명) + 11~30%군(구매 있음 300명) = 600명. 기준 비율은 양성 합 / 행 수 합 = 211 / 3,400
+    assert merged["segment_n"] == 600 and merged["per_group_if_split_in_half"] == 300
+    assert merged["selection"]["tier"] == tools.MERGED_TIER_LABEL and merged["selection"]["purchase"] == "있음"
+    rate = (105 + 106) / (1400 + 2000)
+    assert merged["base_rate_pct"] == round(rate * 100, 1)  # 6.2
+    assert [s["needed_per_group"] for s in merged["scenarios"]] == \
+           [actions.needed_per_group(rate, 0.30), actions.needed_per_group(rate, 0.50)]
+    assert merged["feasible"] is (300 >= actions.needed_per_group(rate, 0.50))  # 계산식은 원래 판정과 같다
+    assert "rate_basis" in merged and "검증" in merged["verdict"]
+
+
+def test_dropping_a_condition_keeps_tier_rate_and_widens_people(monkeypatch):
+    result = alternatives_of(SEG, monkeypatch)
+    relaxed = next(a for a in result["alternatives"] if a["kind"] == "조건 빼기")
+    assert relaxed["selection"] == {"tier": "상위 10%군", "purchase": "전체", "gap_group": "전체"}
+    assert relaxed["segment_n"] == 505 and relaxed["base_rate_pct"] == 7.5  # 상위 10%군 전체: 600 - (100 - 5)
+    assert relaxed["segment_n"] > result["segment_size"]
+
+
+def test_everyone_alternative_uses_population_rate(monkeypatch):
+    result = alternatives_of(SEG, monkeypatch)
+    everyone = next(a for a in result["alternatives"] if a["kind"] == "전체 합치기")
+    assert everyone["selection"] == {"tier": "전체", "purchase": "전체", "gap_group": "전체"}
+    assert everyone["segment_n"] == 1705 and everyone["base_rate_pct"] == round(331 / 7400 * 100, 1)  # 4.5
+
+
+def test_gap_condition_can_be_dropped_too(monkeypatch):
+    result = alternatives_of({**SEG, "gap_group": "공백 4일 미만"}, monkeypatch)
+    labels = [a["label"] for a in result["alternatives"] if a["kind"] == "조건 빼기"]
+    assert labels == ["구매 경험 조건을 빼고 합치기", "소통 공백 조건을 빼고 합치기"]
+
+
+def test_second_tier_merges_with_the_first_but_the_last_tier_does_not(monkeypatch):
+    assert "군 합치기" in kinds(alternatives_of({"tier": "11~30%군"}, monkeypatch))
+    assert "군 합치기" not in kinds(alternatives_of({"tier": "나머지"}, monkeypatch))
+
+
+def test_whole_population_has_only_repeat_and_observation(monkeypatch):
+    result = alternatives_of({}, monkeypatch)  # 이미 전체라 합칠 것이 없다 (그래도 막다른 길로 끝나지 않는다)
+    assert result["sample_size"]["feasible"] is False
+    assert kinds(result) == ["반복 모집", "관찰 분석"]
+
+
+def test_no_alternatives_when_the_test_is_feasible(monkeypatch):
+    big = make_report(cell_n=400, small=False)  # 전체 7,200명: 그룹당 3,600명이면 가능하다
+    result = alternatives_of({}, monkeypatch, big)
+    assert result["sample_size"]["feasible"] is True and result["alternatives"] == []
+
+
+def test_repeat_rounds_alternative_in_the_result(monkeypatch):
+    result = alternatives_of(SEG, monkeypatch)
+    repeat = next(a for a in result["alternatives"] if a["kind"] == "반복 모집")
+    assert [r["assumed_reduction_pct"] for r in repeat["rounds"]] == [30, 50]
+    assert all(r["per_group_per_round"] == 150 for r in repeat["rounds"])  # 300명을 반으로 나눈 값
+    assert "가정" in repeat["assumption"]
+
+
+def test_alternatives_do_not_depend_on_the_llm_draft_and_are_not_sent_to_it(monkeypatch):
+    # 대안은 코드만 만든다: 초안 내용이 달라도 같고, LLM 입력(facts)에도 들어가지 않는다
+    monkeypatch.setattr(tools, "get_report", lambda: make_report())
+    fake = use_complete(monkeypatch, reply(), reply(rec=draft(hypothesis="전혀 다른 가설일 수 있다.")))
+    first = tools.run_recommend_actions(SEG)["for_llm"]["alternatives"]
+    second = tools.run_recommend_actions(SEG)["for_llm"]["alternatives"]
+    assert first == second and first
+    assert all("alternatives" not in json.loads(c["messages"][0]["content"]) for c in fake.calls)
+
+
+def test_hold_result_has_its_own_alternatives_not_these(report, monkeypatch):
+    monkeypatch.setattr(tools, "complete", lambda *a, **k: pytest.fail("LLM 호출 금지"))
+    out = tools.run_recommend_actions({"tier": "상위 10%군", "purchase": "없음", "gap_group": "팔로우 없음"})
+    assert out["status"] == "hold" and "sample_size" not in out["for_llm"]

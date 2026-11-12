@@ -11,3 +11,5 @@ pytest
 pandas
 numpy
 scikit-learn
+# Day 4 화면 (ui/app.py)
+streamlit>=1.57

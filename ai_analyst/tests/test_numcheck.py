@@ -1,7 +1,9 @@
 """숫자 점검(app/numcheck.py) 테스트. 경고 전용 도구라서 "무엇을 잡고 무엇을 못 잡는지"를 테스트로 문서화한다.
 
-세 묶음:
-  1) 허용 변환: 같은 숫자의 다른 표기는 통과시킨다
+분류 기준: 틀린 답을 통과시키면 "못 잡는 경우", 정상 답에 경고가 붙으면 "거짓 경보".
+
+묶음:
+  1) 허용 변환: 같은 숫자의 다른 표기는 통과시킨다 (정의 숫자는 변환 없이 있는 그대로만 통과)
   2) 못 잡는 경우 (놓침): 틀린 답인데 경고가 없다 -> 그래서 이 점검은 차단 수단이 아니다
   3) 거짓 경보: 정상 답인데 경고가 뜬다 -> 그래서 경고만 하고 답을 고치거나 재시도하지 않는다
 """
@@ -63,6 +65,20 @@ def test_definition_numbers_always_pass():
     assert unverified_numbers(answer, []) == []
 
 
+@pytest.mark.parametrize("token", ["1,000", "1,100", "1,400", "2,900", "3,000", "0.14", "0.3"])
+def test_definition_numbers_are_not_converted_so_their_multiples_are_flagged(token):
+    # 정의 숫자(10, 11, 14, 29, 30)는 있는 그대로만 통과한다. 비율<->퍼센트 변환(x100, /100)은
+    # 도구 결과와 질문의 숫자에만 적용하므로, 정의 숫자의 100배나 100분의 1 은 근거가 없으면 "걸린다".
+    # (예전에는 이 변환이 정의 숫자에도 적용되어 10 -> 1,000, 14 -> 1,400, 30 -> 3,000 이 통과하는 구멍이 있었다.)
+    assert unverified_numbers(f"가입자는 {token}명입니다.", []) == [token]
+
+
+def test_conversion_still_applies_to_numbers_from_tool_results():
+    # 변환 자체는 그대로다: 도구 결과의 10 이면 1,000 도 통과한다 (10 의 100배가 결과 근거에서 나왔으므로)
+    assert unverified_numbers("1,000", [{"rows": [[10]]}]) == []
+    assert unverified_numbers("30%", [{"ratio": 0.3}]) == []
+
+
 def test_number_without_evidence_is_reported_once():
     assert unverified_numbers("120명, 다시 120명, 그리고 1,643명", [{"rows": [[1643]]}]) == ["120"]
 
@@ -97,13 +113,6 @@ def test_miss_wrong_number_that_happens_to_exist_elsewhere():
     # 결과에 있는 아무 숫자와 우연히 같으면 통과한다. 행이 많을수록 우연히 맞을 확률이 올라간다.
     rows = [[i] for i in range(1, 200)]
     assert unverified_numbers("가입자는 137명입니다.", [{"rows": rows}]) == []
-
-
-def test_miss_definition_numbers_also_pass_as_percent_conversions():
-    # 정의 숫자에도 비율<->퍼센트 변환(x100, /100)이 적용돼서, 정의 숫자의 100배나 100분의 1 은 근거 없이 통과한다.
-    # (10 -> 1,000 / 0.1, 14 -> 1,400 / 0.14, 30 -> 3,000 / 0.3 ...) 의도한 동작이 아니라 알려진 구멍이다.
-    assert unverified_numbers("가입자는 1,000명, 구매자는 3,000명입니다.", []) == []
-    assert unverified_numbers("가입자는 1,050명입니다.", []) == ["1,050"]  # 정의 숫자와 무관한 값은 걸린다
 
 
 # ---------- 3) 거짓 경보: 정상인데 경고가 뜬다 ----------

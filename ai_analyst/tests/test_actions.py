@@ -210,3 +210,30 @@ def test_action_rules_prompt_has_the_decided_rules():
     assert all(w in rules for w in ("이탈", "위험", "휴면"))  # 팬 글 금지어 (결정 D1)
     assert "오랜만이에요" in rules and "요즘 안 오셨네요" in rules  # 코드로 못 막는 규칙은 프롬프트에만 있다
     assert "send_time" not in rules and "발송" not in rules   # 발송 시점은 만들지 않는다 (결정 D2)
+
+
+# ---------- 대안 (결정 3) ----------
+def test_repeat_rounds_counts_rounds_and_days():
+    rounds = actions.repeat_rounds(actions.sample_size_plan(0.075, 157))["rounds"]  # 그룹당 78명
+    assert [(r["assumed_reduction_pct"], r["needed_per_group"], r["per_group_per_round"]) for r in rounds] == \
+           [(30, 1847, 78), (50, 589, 78)]
+    assert [r["rounds_needed"] for r in rounds] == [24, 8]            # ceil(1847 / 78), ceil(589 / 78)
+    assert [r["days"] for r in rounds] == [24 * 14, 8 * 14]
+
+
+def test_repeat_rounds_states_its_assumption():
+    out = actions.repeat_rounds(actions.sample_size_plan(0.075, 157))
+    assert out["kind"] == "반복 모집" and "서로 다른 사람" in out["assumption"] and "달라질 수 있다" in out["assumption"]
+
+
+def test_labeled_plan_keeps_every_plan_field_and_adds_labels():
+    plan = actions.sample_size_plan(0.062, 600)
+    item = actions.labeled_plan("군 합치기", "상위 30%군", {"tier": "x"}, plan)
+    assert item["kind"] == "군 합치기" and item["label"] == "상위 30%군" and item["selection"] == {"tier": "x"}
+    assert all(item[k] == v for k, v in plan.items()) and item["rate_basis"] == actions.RATE_BASIS
+
+
+def test_observation_alternative_needs_no_sample_and_makes_no_effect_claim():
+    obs = actions.OBSERVATION_ALTERNATIVE
+    assert obs["kind"] == "관찰 분석" and "검증하는 것은 아니다" in obs["description"]
+    assert actions.safety_violations(draft(hypothesis=obs["description"])) == []  # 금지어를 쓰지 않는다

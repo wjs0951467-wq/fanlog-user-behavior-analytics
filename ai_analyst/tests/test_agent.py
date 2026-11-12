@@ -299,6 +299,9 @@ def test_system_prompt_action_request_paragraph():
     assert "no memory" in section and "이 세그먼트" in section      # 대화 기억이 없어 세그먼트를 되묻게 한다
     assert "sample-size verdict" in section and "Do not soften or drop" in section  # 표본 수 판정과 주의 문구를 빼지 않게
     assert "해석 보류" in section and "fewer than 20" in section and "alternatives" in section
+    # 검증할 수 없다는 판정의 대안 목록은 코드가 만든다. 모델이 다른 대안이나 숫자를 지어내지 않게 한다.
+    assert "alternatives list (when present)" in section and "computed by code" in section
+    assert "Do not invent other alternatives or numbers" in section
 
 
 def test_system_prompt_separates_the_two_churn_risk_meanings():
