@@ -590,3 +590,15 @@ def test_agent_loop_other_api_errors_keep_only_the_type_name(monkeypatch):
     from .test_text2sql import api_error
     use_llm(monkeypatch, api_error(cls=openai.RateLimitError, status=429))
     assert run_agent("질문", tools={"echo": fake_tool()})["error"] == "[LLM 오류] RateLimitError"
+
+
+def test_agent_loop_ends_on_an_output_limit_error_without_retrying(monkeypatch):
+    from app.llm import OutputLimitError
+    fake = use_llm(monkeypatch, OutputLimitError())  # FakeLLM 은 마지막 응답을 반복하므로, 재시도했다면 호출이 늘어난다
+    out = run_agent("질문", tools={"echo": fake_tool()})
+    expected = "[LLM 오류] 출력 상한 초과 (추론 토큰이 상한을 소진했을 수 있음)"
+    assert out["answer"] is None and out["error"] == expected
+    assert len(fake.calls) == 1 and out["usage"]["llm_calls"] == 1 and out["steps"] == []
+    assert agent.build_log_record(out)["error"] == expected
+    logged = "".join(p.read_text(encoding="utf-8") for p in agent.LOG_DIR.glob("agent_*.jsonl"))
+    assert expected in logged

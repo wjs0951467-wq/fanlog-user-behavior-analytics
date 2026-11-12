@@ -687,3 +687,22 @@ def test_ask_reports_the_bad_request_diagnostics_in_error_and_is_not_retried(llm
     assert out["error"] == "[LLM 오류] BadRequestError (code=invalid_value, param=tools[0].function.parameters)"
     assert out["usage"]["llm_calls"] == 1 and out["attempts"] == []
     assert_nothing_secret(json.dumps(out, ensure_ascii=False, default=str))
+
+
+# ---------- 출력 상한 소진 오류: 짧은 문장으로 알리고, 재시도하지 않는다 ----------
+OUTPUT_LIMIT_TEXT = "[LLM 오류] 출력 상한 초과 (추론 토큰이 상한을 소진했을 수 있음)"
+
+
+def test_output_limit_error_has_its_own_short_text():
+    from app.llm import OutputLimitError
+    assert text2sql.llm_error_text(OutputLimitError()) == OUTPUT_LIMIT_TEXT
+    assert text2sql.llm_error_text(OutputLimitError("SECRET_MESSAGE_TEXT")) == OUTPUT_LIMIT_TEXT  # 어떤 글도 덧붙이지 않는다
+
+
+def test_ask_does_not_retry_an_output_limit_error(llm, db):
+    from app.llm import OutputLimitError
+    llm.replies = [OutputLimitError(), answer(), "요약"]  # 재시도했다면 두 번째 응답이 쓰였을 것이다
+    out = ask("가입자 수는?")
+    assert out["error"] == OUTPUT_LIMIT_TEXT and out["sql"] is None
+    assert out["usage"]["llm_calls"] == 1 and out["attempts"] == []
+    assert len(llm.calls) == 1 and len(llm.replies) == 2  # 호출이 늘지 않았고, 준비한 응답은 쓰이지 않았다

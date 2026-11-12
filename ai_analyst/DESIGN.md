@@ -262,6 +262,20 @@ Day 4 에이전트와 액션 제안의 한계 (프롬프트로만 통제되는 �
   출력 상한 4000 토큰(상수 MAX_OUTPUT_TOKENS). 출력 상한의 파라미터 이름은 상수 OUTPUT_TOKEN_PARAM 한 곳이다. 모델에 따라
   max_tokens 만 받거나 max_completion_tokens 만 받는다고 알려져 있어서, 지금은 max_completion_tokens 로 두었다.
   이것은 실제 호출 없이는 확인할 수 없다. **D단계 첫 호출에서 확인한다**(400 오류가 나면 OUTPUT_TOKEN_PARAM 한 줄만 바꾼다).
+- 추론 계열 모델 대응(D단계 첫 호출에서 발견): 일부 최신 OpenAI 모델(GPT-5.6 이후 계열)은 reasoning_effort 의 기본값이 medium 이라서
+  /v1/chat/completions 에 tools 를 보내면(reasoning_effort 를 보내지 않아도) 400 으로 거절된다(관찰: BadRequestError, param=reasoning_effort, code 없음, 토큰 0).
+  그래서 tools 를 보내는 complete_with_tools 에만 reasoning_effort="none" 을 보낸다(상수 TOOL_REASONING_EFFORT 한 곳. 설치된 openai SDK 가
+  이 인자를 직접 받으면 직접, 받지 못하면 extra_body 로 보낸다). tools 가 없는 complete()(SQL 생성과 요약 호출)의 요청 인자는 바꾸지 않았다.
+  **미검증**: reasoning_effort="none" 이 이 모델에서 허용되는지는 아직 관찰하지 않았다. 첫 400 오류는 param=reasoning_effort 하나만 보고했고,
+  API 가 오류 하나만 먼저 알렸을 수 있어서 max_completion_tokens(OUTPUT_TOKEN_PARAM)가 허용되는지도 아직 확인되지 않았다.
+  다음 성공 호출에서 확인하거나, 이 인자들로 인한 오류가 나오면 그 인자만 바꾼다(OUTPUT_TOKEN_PARAM 만 바꾸거나 TOOL_REASONING_EFFORT 를 바꾼다).
+  reasoning_effort="none" 이 거부되면 후속 선택지는 두 가지다: 모델을 바꾸거나(예: gpt-5.4-mini) Responses API(/v1/responses)로 옮긴다.
+- 출력 상한 소진 구분: 추론 계열 모델은 추론 토큰도 max_completion_tokens 에 포함되어, 추론만 하다 상한이 끝나 보이는 글이 비어 올 수 있다.
+  응답의 content 가 비어 있고 도구 호출도 없으면서 finish_reason 이 "length" 이면 OutputLimitError 로 끝내고, 오류 문장은
+  "[LLM 오류] 출력 상한 초과 (추론 토큰이 상한을 소진했을 수 있음)" 한 가지다(error 와 로그에 같은 문장, 응답 본문과 오류 문장은 담지 않는다).
+  complete_with_tools 와 complete() 둘 다 이 검사를 한다(complete() 의 요청 인자는 그대로이고 응답 검사만 추가). 이 호출들도 같은 추론 모델에서
+  출력이 비어 보일 수 있다는 한계가 있다. 이 오류는 재시도 대상이 아니다: 같은 요청을 다시 보내도 같은 결과일 가능성이 높고 호출만 늘어서,
+  ask() 의 재시도 루프와 에이전트 루프는 다른 LLM 오류와 똑같이 재시도 없이 오류로 끝낸다. 토큰 수는 응답을 버리므로 0 으로 남고, 호출 수(예산의 기준)는 1회로 센다.
   재시도를 끈 대가로, 일시적인 네트워크 오류가 SDK 안에서 조용히 복구되지 않고 그대로 오류로 나온다.
 - 도구가 LLM 을 부른 뒤 예외로 죽으면 쓴 호출 수를 알 수 없어서, 그 도구가 쓸 수 있는 최대치(llm_cost)로 세어 예산과 일일 합계에
   넣는다. 실제보다 많이 세는 경우가 있을 수 있고(LLM 을 부르기 전에 죽은 경우) 적게 세지는 않는다.

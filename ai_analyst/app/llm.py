@@ -5,11 +5,13 @@
 - 테스트에서 complete() 하나만 가짜로 바꾸면 실제 API 를 한 번도 부르지 않는다.
 - 호출 수/토큰 수를 한 군데에서 세므로 공용 크레딧 관리가 쉽다.
 """
+import inspect
 import os
 from functools import lru_cache
 
 from dotenv import load_dotenv
 from openai import OpenAI
+from openai.resources.chat.completions import Completions
 
 load_dotenv()
 
@@ -19,6 +21,35 @@ MAX_OUTPUT_TOKENS = 4000      # 응답 하나의 출력 상한. 질문당 호출
 # 출력 상한의 파라미터 이름. 모델에 따라 max_tokens 만 받거나 max_completion_tokens 만 받는다고 알려져 있다.
 # 실제 호출 없이는 확인할 수 없으므로 D단계 첫 호출에서 확인한다. 안 되면 이 한 줄만 바꾼다.
 OUTPUT_TOKEN_PARAM = "max_completion_tokens"
+# 도구(tools)를 보내는 호출에만 추론 강도를 "none" 으로 보낸다. 일부 최신 추론 계열 모델은 reasoning_effort 기본값이 medium 이라서
+# chat/completions 에 tools 를 보내면(reasoning_effort 를 안 보내도) 400 (param=reasoning_effort) 으로 거절한다.
+# 이 값이 모델에서 허용되는지는 아직 확인하지 않았다(미검증). 거부되면 모델을 바꾸거나 Responses API 로 옮긴다 (DESIGN.md 10장).
+TOOL_REASONING_EFFORT = "none"
+
+
+class OutputLimitError(Exception):
+    """응답이 출력 상한(finish_reason == "length")에서 잘렸는데 내용이 비어 있다.
+
+    추론 계열 모델은 추론 토큰도 상한에 포함되어, 추론만 하다 상한이 끝나 보이는 글이 없을 수 있다.
+    응답 본문과 오류 문장은 담지 않는다. 같은 요청을 다시 보내도 같은 결과일 가능성이 높아서 재시도하지 않는다.
+    """
+
+
+def _sdk_accepts_reasoning_effort() -> bool:
+    """설치된 openai SDK 의 create() 가 reasoning_effort 를 직접 받는가. 못 받으면 extra_body 로 보낸다."""
+    return "reasoning_effort" in inspect.signature(Completions.create).parameters
+
+
+def _reasoning_options() -> dict:
+    if _sdk_accepts_reasoning_effort():
+        return {"reasoning_effort": TOOL_REASONING_EFFORT}
+    return {"extra_body": {"reasoning_effort": TOOL_REASONING_EFFORT}}
+
+
+def _check_not_cut_off(choice, text: str, has_tool_calls: bool = False) -> None:
+    """내용이 비었는데 길이 상한에서 끝났다면 "출력이 비었다" 대신 원인을 알 수 있는 오류로 끝낸다."""
+    if not text and not has_tool_calls and getattr(choice, "finish_reason", None) == "length":
+        raise OutputLimitError()
 
 
 @lru_cache(maxsize=1)
@@ -54,6 +85,7 @@ def complete(system: str, messages: list[dict], json_mode: bool = False) -> dict
     # content 가 None 으로 올 수 있다(모델이 응답을 거부한 경우 등). 빈 문자열로 바꿔
     # 호출한 쪽에서 "파싱 실패"로 자연스럽게 처리되게 한다.
     text = resp.choices[0].message.content or ""
+    _check_not_cut_off(resp.choices[0], text)
     tokens = resp.usage.total_tokens if resp.usage else 0
     return {"text": text, "tokens": tokens}
 
@@ -76,10 +108,12 @@ def complete_with_tools(system: str, messages: list[dict], tools: list[dict], al
         # 한 번에 도구를 여러 개 부르면 질문당 호출 수의 상한을 정할 수 없다. 한 단계에 하나만 부르게 한다.
         parallel_tool_calls=False,
         **{OUTPUT_TOKEN_PARAM: MAX_OUTPUT_TOKENS},
+        **_reasoning_options(),  # tools 를 보내는 이 호출에만 (complete() 는 바꾸지 않는다)
     )
     message = resp.choices[0].message
     calls = [{"id": c.id, "name": c.function.name, "arguments": c.function.arguments}
              for c in (message.tool_calls or [])]
+    _check_not_cut_off(resp.choices[0], message.content or "", bool(calls))
     return {"text": message.content or "", "tool_calls": calls,
             "tokens": resp.usage.total_tokens if resp.usage else 0}
 

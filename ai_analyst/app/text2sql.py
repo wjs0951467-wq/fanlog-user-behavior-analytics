@@ -17,7 +17,7 @@ from pathlib import Path
 from openai import BadRequestError
 
 from .db import run_query
-from .llm import complete
+from .llm import OutputLimitError, complete
 from .safety import clip_deep, mask_ids, mask_rows
 from .sql_guard import ALLOWED_TABLES, MAX_ROWS, SQLGuardError, validate_sql
 
@@ -272,6 +272,8 @@ def llm_error_text(e: Exception) -> str:
     (키 조각이 섞일 수 있다). 클래스가 BadRequestError 이고 status_code 가 정확히 400 일 때만 읽는다 (이름만 같은 객체는 믿지 않는다).
     """
     name = type(e).__name__
+    if isinstance(e, OutputLimitError):  # 응답이 상한에서 잘려 비었다: 고정 문장 하나 (재시도 대상이 아니다. ask() 와 에이전트는 LLM 오류를 다시 보내지 않는다)
+        return "[LLM 오류] 출력 상한 초과 (추론 토큰이 상한을 소진했을 수 있음)"
     if isinstance(e, BadRequestError) and getattr(e, "status_code", None) == 400:
         parts = [f"{key}={value}" for key in ("code", "param") if (value := _safe_diagnostic(getattr(e, key, None)))]
         if parts:

@@ -467,3 +467,11 @@ def test_recommend_actions_shows_bad_request_diagnostics_only(report, monkeypatc
     assert out["for_llm"]["error"] == "[LLM 오류] BadRequestError (code=invalid_value, param=response_format)"
     assert out["usage"]["llm_calls"] == 1
     assert_nothing_secret(json.dumps(out, ensure_ascii=False, default=str))
+
+
+def test_recommend_actions_does_not_retry_an_output_limit_error(report, monkeypatch):
+    from app.llm import OutputLimitError
+    fake = use_complete(monkeypatch, OutputLimitError())
+    out = tools.run_recommend_actions(SEG)
+    assert out["status"] == "error" and "출력 상한 초과" in out["for_llm"]["error"]
+    assert len(fake.calls) == 1 and out["usage"]["llm_calls"] == 1
