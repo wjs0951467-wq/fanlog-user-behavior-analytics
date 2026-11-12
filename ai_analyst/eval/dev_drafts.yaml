@@ -1,0 +1,71 @@
+# 개발용(dev) 6문항 중 questions.yaml 에 아직 넣지 않은 4문항의 초안.
+#
+# 질문 문장은 eval_notes.md 의 표와 글자 그대로 같다. 정답 값은 eval_notes.md 에 사람이 검증해 둔 값이 있다.
+# 아래 reference_sql 은 Claude Code 가 그 표의 "확인 방법"을 보고 쓴 초안이며 DB 에서 실행해 보지 않았다.
+# 사람이 DBeaver 로 실행해 eval_notes.md 의 정답과 같은지 확인한 뒤 questions.yaml 로 옮기고 verified 를 정한다.
+# 형식은 questions.yaml 과 같다 (같은 로더로 읽힌다).
+
+questions:
+  - id: DEV01
+    question: "구매 전환율은?"
+    category: 지표 정의
+    split: dev
+    verified: false
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT ROUND(COUNT(*) FILTER (WHERE reached_purchase)::numeric / COUNT(*), 4) AS purchase_conversion
+      FROM mart_commerce_funnel
+    tolerance: {abs: 0.0001, accept_percent_or_ratio: true}
+    notes: "eval_notes.md 의 정답은 791 / 4,817 = 16.42%. 모델이 0.1642 로 답하든 16.42 로 답하든 같은 답으로 본다."
+    source: eval_notes.md
+
+  - id: DEV02
+    question: "유입 채널별 구매 전환율"
+    category: 조인
+    split: dev
+    verified: false
+    expected_kind: rows
+    reference_sql: |-
+      SELECT u.acquisition_channel,
+             ROUND(COUNT(*) FILTER (WHERE f.reached_purchase)::numeric / COUNT(*), 4) AS purchase_conversion
+      FROM mart_commerce_funnel f
+      JOIN dim_user u ON u.user_id = f.user_id
+      GROUP BY u.acquisition_channel
+      ORDER BY purchase_conversion DESC
+    tolerance: {abs: 0.001, accept_percent_or_ratio: true}
+    notes: "eval_notes.md 의 정답은 search 17.2 / direct 16.6 / social 16.4 / push 15.5 (%). 표의 값이 소수 첫째 자리라 오차를 0.001(비율 기준)로 두었다."
+    source: eval_notes.md
+
+  - id: DEV05
+    question: "현재 이탈 위험 팬은 몇 명? (탈퇴자 제외)"
+    category: 지표 정의
+    split: dev
+    verified: false
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT m.user_id) AS at_risk_fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
+        AND m.activity_status = 'at_risk'
+        AND u.is_deleted IS NOT TRUE
+    tolerance: {abs: 0}
+    notes: "eval_notes.md 의 정답은 75 (전체 77 - 탈퇴 2)."
+    source: eval_notes.md
+
+  - id: DEV06
+    question: "현재 활동 중인 팬은 몇 명? (탈퇴자 제외)"
+    category: 지표 정의
+    split: dev
+    verified: false
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT m.user_id) AS active_fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
+        AND m.activity_status = 'active'
+        AND u.is_deleted IS NOT TRUE
+    tolerance: {abs: 0}
+    notes: "eval_notes.md 의 정답은 1,643 (전체 1,670 - 탈퇴 27)."
+    source: eval_notes.md
