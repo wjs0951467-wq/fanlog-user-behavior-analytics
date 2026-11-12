@@ -17,11 +17,12 @@ from functools import lru_cache
 
 from . import actions, churn, numcheck
 from .llm import complete
+from .safety import MODEL_TEXT_CHARS, clip_deep, clip_text
 from .text2sql import MAX_SQL_CALLS, ask, llm_error_text
 
 MAX_QUESTION_CHARS = 300
 ROWS_FOR_LLM = 20         # 모델에게는 상위 20행만 준다. 전체 표는 화면이 for_ui 로 그린다
-CELL_CHARS_FOR_LLM = 200  # 긴 문자열 칸은 자른다 (토큰 절약 + 데이터 안에 숨은 지시문이 통째로 들어가는 것 방지)
+CELL_CHARS_FOR_LLM = MODEL_TEXT_CHARS  # 긴 문자열 칸은 자른다 (토큰 절약 + 데이터 안에 숨은 지시문이 통째로 들어가는 것 방지)
 
 # 모든 도구가 공통으로 받는 인자. 설계서의 "어떤 도구를, 왜, 무슨 인자로"에서 "왜"를 기록하기 위한 것이다.
 REASON_PARAM = {"type": "string", "description": "이 도구를 왜 부르는지 한국어 한 문장"}
@@ -42,8 +43,7 @@ def _trim_rows(rows: list) -> list:
     def cell(v):
         if isinstance(v, (int, float, bool)) or v is None:
             return v
-        text = str(v)  # Decimal, date 등은 문자열로
-        return text if len(text) <= CELL_CHARS_FOR_LLM else text[:CELL_CHARS_FOR_LLM] + "...(잘림)"
+        return clip_text(v, CELL_CHARS_FOR_LLM)  # Decimal, date 등은 문자열로 바꾸고, 길면 자른다
     return [[cell(v) for v in row] for row in rows[:ROWS_FOR_LLM]]
 
 
@@ -63,14 +63,18 @@ def run_ask_data(args: dict) -> dict:
     # 요약은 끈다: 최종 문장은 에이전트가 쓰므로 요약 호출 1회가 중복이다.
     out = ask(question.strip(), summarize_result=False)
     status = "ok" if not out["error"] else "refusal" if out["error"].startswith("CANNOT_ANSWER") else "error"
-    for_llm = {
+    # 모델에게 가는 모든 문자열 칸(sql, 컬럼 이름, 가정, 오류, 행 값)을 같은 길이로 자른다. 행 값만 자르면
+    # 별칭이나 가정, 오류 문장에 실린 긴 지시문이 그대로 들어간다. (화면과 로그에는 for_ui 의 원본이 간다)
+    for_llm = clip_deep({
         "sql": out["sql"], "columns": out["columns"], "row_count": out["row_count"],
         "rows": _trim_rows(out["rows"]),
         "rows_shown": min(out["row_count"], ROWS_FOR_LLM),
         "truncated": out.get("truncated", False),  # 상한에서 잘린 결과면 모델도 "일부만 봤다"는 것을 알아야 한다
+        "row_cap_note": out.get("row_cap_note"),   # 결과가 정확히 상한 행이면 "더 있을 수 있음"
+        "masked_ids": out.get("masked_ids", 0),    # 사용자 ID 모양이라 [ID] 로 가린 값의 수
         "assumptions": out["assumptions"], "error": out["error"],
         # attempts(실패한 SQL 과 에러 원문)는 모델에게 주지 않는다. 화면과 로그에서만 본다.
-    }
+    })
     return {"status": status, "for_llm": for_llm, "for_ui": out, "usage": out["usage"]}
 
 

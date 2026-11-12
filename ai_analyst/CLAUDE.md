@@ -10,9 +10,14 @@ FANLOG DB(PostgreSQL)에 자연어로 질문하면 SQL을 생성·검증·실행
 - 완료: Day 3 이탈 위험 점수와 세그먼트(app/churn.py).
 - 완료: Day 4 A~C단계 (A: 에이전트 루프, 호출 예산, 로그 / B: 도구 3개 ask_data, get_churn_segments, recommend_actions,
   app/actions.py, 숫자 점검 app/numcheck.py, ask() 오류 문장 정리, 표본 수 "검증 불가" 시 코드가 계산한 대안 목록 /
-  C: Streamlit 화면 ui/app.py, 세션 한도 30회와 일일 한도 100회). pytest 400개 통과 (DB 와 LLM 은 mock).
-- 남은 것: D단계(실제 OpenAI 로 에이전트와 화면을 돌려 보는 것. 사용자가 직접 하고, 지금까지 실제 호출로 돌려 본 적은 없다),
-  E단계(문서 정리).
+  C: Streamlit 화면 ui/app.py, 세션 한도 30회와 일일 한도 100회). pytest 631개 통과 (DB 와 LLM 은 mock).
+- 완료: 보안 점검 수정. SQL 가드레일 우회 4종 차단(CTE 범위, 함수 허용 목록, 행 수 제한, catalog 이름), 사용자 ID 값 기준 가리기
+  (app/safety.py), DB 오류 문장 가리기와 200자 제한, 모델 입력 길이 제한, LLM 호출 옵션(재시도 끔, 60초, 출력 상한),
+  /ask 질문 길이 제한과 /ask·CLI 호출의 일일 합계 기록. 자세한 내용과 한계는 DESIGN.md 10장.
+- 남은 것: 보안 점검 나머지 항목(의존성 버전 고정과 정리는 Day 5 정리 때, 프로파일 값 길이 상한),
+  D단계(실제 OpenAI 로 에이전트와 화면을 돌려 보는 것. 사용자가 직접 하고, 지금까지 실제 호출로 돌려 본 적은 없다.
+  첫 호출에서 llm.py 의 OUTPUT_TOKEN_PARAM(max_completion_tokens / max_tokens)이 맞는지 확인한다),
+  E단계(문서 정리), Day 5(평가).
 - 화면 실행 (ai_analyst 폴더에서, 접속 http://localhost:8502):
   python -m streamlit run ui/app.py --server.port 8502 --server.headless true --server.address localhost
   OpenAI 호출(공용 크레딧)을 쓰므로 외부에 열지 않는다. 제출 버튼을 누를 때만 호출한다.

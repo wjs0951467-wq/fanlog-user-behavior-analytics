@@ -83,7 +83,22 @@ class SQLGuardError(ValueError):
 
 
 def validate_sql(sql: str, max_rows: int = MAX_ROWS) -> str:
-    """통과하면 LIMIT이 보장된 안전한 SQL 문자열을 돌려주고, 아니면 SQLGuardError."""
+    """통과하면 LIMIT이 보장된 안전한 SQL 문자열을 돌려주고, 아니면 SQLGuardError.
+
+    어떤 예외도 SQLGuardError 로 끝난다 (닫는 방향). sqlglot 의 TokenError(따옴표가 닫히지 않은 SQL 등)는 ParseError 가
+    아니라서, 잡지 않으면 ask() 가 LLM 을 부른 뒤에 예외로 죽어 사용량을 잃고 재시도도 못 한다.
+    """
+    try:
+        return _validate(sql, max_rows)
+    except SQLGuardError:
+        raise
+    except sqlglot.errors.SqlglotError as e:
+        raise SQLGuardError(f"SQL 문법 오류: {e}") from e
+    except Exception as e:  # 검사 코드의 예상 못한 오류: 통과시키지 않는다
+        raise SQLGuardError(f"SQL 검사 중 예상 못한 오류 ({type(e).__name__}). 다른 방식으로 쓰세요.") from e
+
+
+def _validate(sql: str, max_rows: int) -> str:
     try:
         statements = [s for s in sqlglot.parse(sql, read="postgres") if s is not None]
     except sqlglot.errors.ParseError as e:

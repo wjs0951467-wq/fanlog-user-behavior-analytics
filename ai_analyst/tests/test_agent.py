@@ -458,3 +458,116 @@ def test_ask_data_tells_the_model_when_the_result_was_truncated(monkeypatch):
     assert tools.run_ask_data({"question": "q"})["for_llm"]["truncated"] is True
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())  # 예전 형태(키 없음)도 받는다
     assert tools.run_ask_data({"question": "q"})["for_llm"]["truncated"] is False
+
+
+# =====================================================================
+# 보안 점검: 모델 입력 길이, ID 가리기(답변과 로그), 도구 예외 때의 사용량
+# =====================================================================
+def test_ask_data_clips_every_string_field_the_model_sees(monkeypatch):
+    long = "가" * 500
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        sql="SELECT " + "x" * 500, columns=[long, "n"], assumptions=[long, "짧음"]))
+
+    seen = tools.run_ask_data({"question": "q"})["for_llm"]
+
+    for text in (seen["sql"], seen["columns"][0], seen["assumptions"][0]):
+        assert text.endswith("...(잘림)") and len(text) <= 200 + len("...(잘림)")
+    assert seen["columns"][1] == "n" and seen["assumptions"][1] == "짧음"  # 짧은 것은 그대로
+
+
+def test_ask_data_clips_the_error_for_the_model_but_not_for_the_screen(monkeypatch):
+    long_error = "[DB 오류] " + "가" * 500
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        sql=None, rows=[], row_count=0, error=long_error))
+
+    out = tools.run_ask_data({"question": "q"})
+
+    assert out["status"] == "error" and out["for_llm"]["error"].endswith("...(잘림)")
+    assert out["for_ui"]["error"] == long_error  # 화면용 원본은 그대로
+
+
+def test_ask_data_passes_the_row_cap_note_and_mask_count_to_the_model(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        row_cap_note="결과가 정확히 1000행이라 더 있을 수 있음", masked_ids=3))
+    seen = tools.run_ask_data({"question": "q"})["for_llm"]
+    assert "정확히 1000행" in seen["row_cap_note"] and seen["masked_ids"] == 3
+
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())  # 키가 없는 예전 형태도 받는다
+    seen = tools.run_ask_data({"question": "q"})["for_llm"]
+    assert seen["row_cap_note"] is None and seen["masked_ids"] == 0
+
+
+def _only_log_record(tmp_path):
+    path = next((tmp_path / "logs").glob("agent_*.jsonl"))
+    return json.loads(path.read_text(encoding="utf-8").splitlines()[0])
+
+
+def test_answer_is_masked_in_the_result_and_in_the_log(monkeypatch, tmp_path):
+    use_llm(monkeypatch, says("user_000123 님이 가장 많이 구매했습니다."))
+    out = run_agent("질문", tools={"echo": fake_tool()})
+    assert out["answer"] == "[ID] 님이 가장 많이 구매했습니다."
+    assert _only_log_record(tmp_path)["answer"] == "[ID] 님이 가장 많이 구매했습니다."
+
+
+def test_masked_ids_do_not_trigger_the_unverified_number_warning(monkeypatch):
+    use_llm(monkeypatch, says("user_000123 님입니다."))
+    out = run_agent("질문", tools={"echo": fake_tool()})
+    assert out["unverified_numbers"] == []  # 000123 이 "근거 없는 숫자"로 잡히면 안 된다
+
+
+def test_log_record_masks_ids_in_every_text_field():
+    result = {"question": "user_000123 은?", "answer": "user_000123 입니다", "error": "오류 user_000123",
+              "steps": [{"step": 1, "tool": "ask_data", "reason": "user_000123 확인", "args": {"question": "user_000123"},
+                         "status": "error", "llm_calls": 1, "elapsed_ms": 1,
+                         "result": {"sql": "SELECT 1 WHERE user_id = 'user_000123'", "error": "bad user_000123",
+                                    "row_count": 1, "columns": ["id"]}}],
+              "usage": {"llm_calls": 1, "tokens": 1, "by_source": {}}, "unverified_numbers": [],
+              "forced_final": False, "elapsed_ms": 1}
+    record = agent.build_log_record(result)
+    assert "user_000123" not in json.dumps(record, ensure_ascii=False)
+    assert record["usage"]["llm_calls"] == 1  # 숫자 칸은 그대로
+
+
+def test_tool_exception_still_counts_its_worst_case_llm_calls(monkeypatch, tmp_path):
+    """도구가 LLM 을 부른 뒤 예외가 나면 사용량이 사라진다. 모르는 만큼은 최대치(llm_cost)로 센다 (예산과 일일 합계 모두)."""
+    from ui import view
+    use_llm(monkeypatch, says("", call("echo")), says("끝"))
+
+    out = run_agent("q", tools={"echo": fake_tool(llm_cost=2, fail=True)})
+
+    assert out["usage"]["llm_calls"] == 2 + 2  # 에이전트 2회 + 도구 최대 2회
+    assert out["usage"]["by_source"]["echo"]["llm_calls"] == 2 and out["steps"][0]["llm_calls"] == 2
+    assert view.daily_calls(tmp_path / "logs") == (4, 0)  # 일일 합계에도 들어간다
+
+
+def test_tool_exception_cost_reduces_the_remaining_budget(monkeypatch):
+    boom = fake_tool(name="boom", llm_cost=6, fail=True)
+    later = fake_tool(name="later", llm_cost=3)
+    use_llm(monkeypatch, says("", call("boom")), says("", call("later", c2="x")), says("끝"))
+
+    out = run_agent("q", tools={"boom": boom, "later": later})
+
+    assert later["ran"] == []  # 남은 예산(2회)이 이 도구의 최대치(3회)보다 적어 실행하지 않는다
+    assert out["steps"][1]["status"] == "error" and "예산" in json.dumps(out["steps"][1]["result"], ensure_ascii=False)
+
+
+def test_tool_without_llm_cost_adds_nothing_on_exception(monkeypatch):
+    use_llm(monkeypatch, says("", call("echo")), says("끝"))
+    out = run_agent("q", tools={"echo": fake_tool(llm_cost=0, fail=True)})
+    assert out["usage"]["llm_calls"] == 2  # 에이전트 2회뿐
+
+
+def test_guard_never_raises_through_ask_so_usage_is_kept(monkeypatch):
+    """SQL 토크나이저 오류가 예외로 새면 ask() 가 LLM 호출 뒤에 죽어 사용량을 잃는다. 가드레일 오류로 끝나야 한다."""
+    from app import text2sql
+    calls = []
+
+    def fake_complete(system, messages, json_mode=False):
+        calls.append(1)
+        return {"text": json.dumps({"sql": "SELECT 'abc", "assumptions": []}), "tokens": 10}
+
+    monkeypatch.setattr(text2sql, "complete", fake_complete)
+    monkeypatch.setattr(text2sql, "build_system_prompt", lambda: "SYSTEM (JSON)")
+    monkeypatch.setattr(text2sql, "load_profile", lambda: {})
+    out = text2sql.ask("질문", summarize_result=False)
+    assert out["usage"]["llm_calls"] == 3 and "가드레일" in out["error"] and len(calls) == 3

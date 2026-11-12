@@ -358,3 +358,22 @@ def test_allow_list_contains_the_agreed_starting_functions():
     assert set(USER_LISTED_FUNCTIONS) <= sql_guard.ALLOWED_FUNCTIONS
     assert not (sql_guard.ALLOWED_FUNCTIONS & sql_guard.FORBIDDEN_FUNCTIONS)  # 두 목록에 동시에 있는 이름은 없다
     assert all(name == name.lower() for name in sql_guard.ALLOWED_FUNCTIONS)
+
+
+# ---------- 검사가 예외를 던져도 SQLGuardError 로 끝난다 (닫는 방향) ----------
+@pytest.mark.parametrize("sql", ["SELECT 'abc", 'SELECT "abc', "SELECT 1 /* x", "SELECT $$abc"])
+def test_tokenizer_errors_become_guard_errors(sql):
+    """sqlglot 의 토크나이저 오류(TokenError)는 ParseError 가 아니다. 그대로 두면 ask() 가 LLM 호출 뒤에 죽는다."""
+    with pytest.raises(SQLGuardError, match="SQL 문법 오류"):
+        validate_sql(sql)
+
+
+def test_unexpected_error_inside_a_check_fails_closed(monkeypatch):
+    from app import sql_guard
+
+    def boom(root):
+        raise AttributeError("내부 버그 흉내")
+
+    monkeypatch.setattr(sql_guard, "_check_tables", boom)
+    with pytest.raises(SQLGuardError, match="AttributeError"):
+        validate_sql("SELECT user_id FROM dim_user")

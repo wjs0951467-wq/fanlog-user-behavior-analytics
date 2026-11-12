@@ -460,3 +460,53 @@ def test_normal_result_has_no_truncation_warning(monkeypatch):
     script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
     at = submit(new_app())
     assert not any("잘렸습니다" in w.value for w in at.warning)
+
+
+# =====================================================================
+# 보안 점검: 화면의 ID 가리기, 1000행 안내
+# =====================================================================
+def test_aliased_user_ids_never_reach_the_screen_even_if_ask_did_not_mask_them(monkeypatch):
+    """ask() 안의 가리기를 건너뛰는 상황(가짜 ask)을 일부러 만들어서, 화면 쪽 두 번째 방어선만 따로 시험한다."""
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        columns=["id", "n"], rows=[["user_000123", 3], ["user_000456", 4]], row_count=2))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    page = everything(at)
+    assert "user_000123" not in page and "user_000456" not in page
+    assert at.dataframe[0].value["id"].tolist() == ["[ID]", "[ID]"]
+
+
+def test_user_id_in_the_agent_answer_is_masked_on_screen(monkeypatch):
+    script_agent(monkeypatch, says("user_000123 님이 가장 많습니다."))
+    at = submit(new_app())
+    assert "user_000123" not in everything(at) and "[ID] 님이 가장 많습니다." in "".join(t.value for t in at.text)
+
+
+def test_masked_id_count_is_shown(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(masked_ids=2))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert any("2개" in c.value and "[ID]" in c.value.replace(chr(92), "") for c in at.caption)
+
+
+def test_no_mask_caption_when_nothing_was_masked(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(masked_ids=0))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert not any("가렸습니다" in c.value for c in at.caption)
+
+
+def test_exactly_max_rows_note_is_shown(monkeypatch):
+    from app import text2sql
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
+        columns=["n"], rows=[[i] for i in range(1000)], row_count=1000, row_cap_note=text2sql.ROW_CAP_NOTE))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert any("정확히 1000행이라 더 있을 수 있음" in i.value.replace(chr(92), "") for i in at.info)
+
+
+def test_no_row_cap_note_for_a_normal_result(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    at = submit(new_app())
+    assert not any("정확히 1000행" in i.value for i in at.info)

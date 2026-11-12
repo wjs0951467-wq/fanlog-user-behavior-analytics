@@ -14,6 +14,8 @@ from pathlib import Path
 
 import pandas as pd
 
+from app.safety import mask_ids
+
 SESSION_CALL_LIMIT = 30  # 세션 하나가 쓸 수 있는 LLM 호출 누적 한도 (공용 크레딧 보호)
 
 # 개인을 가리키는 컬럼은 ask_data 표에서도 그리지 않는다
@@ -115,7 +117,9 @@ def usage_text(usage: dict | None) -> str:
 # ---------- 표 ----------
 def _cell(value):
     """표 칸 값을 화면이 그릴 수 있는 기본형으로 바꾼다 (Decimal 은 숫자로, 날짜 같은 것은 글자로)."""
-    if value is None or isinstance(value, (bool, int, float, str)):
+    if isinstance(value, str):
+        return mask_ids(value)  # 별칭으로 컬럼 이름을 바꿔도 값이 사용자 ID 모양이면 가린다 (이름 기준 숨김의 빈틈 보완)
+    if value is None or isinstance(value, (bool, int, float)):
         return value
     if isinstance(value, Decimal):
         return float(value)

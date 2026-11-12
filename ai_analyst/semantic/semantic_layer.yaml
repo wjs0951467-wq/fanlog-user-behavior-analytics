@@ -26,6 +26,8 @@ conventions:
     질문이 '현재 사용자/활성 사용자'면 제외(is_deleted IS NOT TRUE), '가입자 수'처럼 누적을 묻는 경우는 포함한다. [검증 필요]
   - 금액 단위는 원(KRW).
   - ID 나열 대신 사람이 읽을 수 있는 이름(artist_name 등)과 집계 값을 보여준다.
+  - 개별 사용자 ID(user_id)를 결과로 나열하지 않는다. 인원 수, 비율, 합계 같은 집계 값으로 답한다.
+    개별 팬의 목록을 달라는 질문이면 집계로 바꿔서 답하고, 그렇게 바꿨다는 것을 assumptions 에 적는다.
 
 table_guide:
   dim_user: 사용자 1행 = 1명. signup_date_kst, country_group, acquisition_channel(direct/push/social/search), primary_device_type(mobile/desktop/tablet), is_deleted.

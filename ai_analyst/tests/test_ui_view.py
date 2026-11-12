@@ -180,3 +180,17 @@ def test_attempts_frame():
                               {"sql": "SELECT 1", "error_type": "none", "error_message": None}])
     assert df["시도"].tolist() == [1, 2] and df.iloc[0]["SQL"] == "" and df.iloc[1]["오류"] == ""
     assert isinstance(df, pd.DataFrame)
+
+
+# =====================================================================
+# 보안 점검: 화면의 ID 가리기, 1000행 안내
+# =====================================================================
+def test_aliased_user_ids_are_masked_by_value_in_the_table():
+    """컬럼 이름이 user_id 가 아니어도(별칭) 값이 사용자 ID 모양이면 표에서 가려진다 (이름 기준 숨김의 빈틈 보완)."""
+    df, hidden = view.result_table(["id", "n"], [["user_000123", 3], ["txn_000001", 4]])
+    assert df["id"].tolist() == ["[ID]", "txn_000001"] and hidden == []  # 주문번호는 그대로
+
+
+def test_result_table_masks_ids_inside_longer_text_cells():
+    df, _ = view.result_table(["memo"], [["user_000123 님이 구매"]])
+    assert df["memo"].tolist() == ["[ID] 님이 구매"]

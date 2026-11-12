@@ -13,10 +13,20 @@ from openai import OpenAI
 
 load_dotenv()
 
+# 비용과 멈춤 방지 (공용 크레딧)
+CLIENT_TIMEOUT_SECONDS = 60   # 응답이 이보다 늦으면 오류로 끝낸다
+MAX_OUTPUT_TOKENS = 4000      # 응답 하나의 출력 상한. 질문당 호출 수 상한(10회)과 함께 질문 하나의 최대 비용을 막는다
+# 출력 상한의 파라미터 이름. 모델에 따라 max_tokens 만 받거나 max_completion_tokens 만 받는다고 알려져 있다.
+# 실제 호출 없이는 확인할 수 없으므로 D단계 첫 호출에서 확인한다. 안 되면 이 한 줄만 바꾼다.
+OUTPUT_TOKEN_PARAM = "max_completion_tokens"
+
 
 @lru_cache(maxsize=1)
 def _client() -> OpenAI:
-    return OpenAI()  # OPENAI_API_KEY 환경변수를 사용한다. 키를 코드에 쓰지 않는다.
+    # max_retries=0: SDK 는 기본으로 실패한 요청을 몰래 다시 보낸다. 그러면 우리가 센 호출 수보다 실제 요청이 많아진다.
+    # 재시도는 text2sql 의 재시도 루프(호출 수를 세는 곳) 한 곳에서만 한다.
+    # OPENAI_API_KEY 환경변수를 사용한다. 키를 코드에 쓰지 않는다.
+    return OpenAI(max_retries=0, timeout=CLIENT_TIMEOUT_SECONDS)
 
 
 def complete(system: str, messages: list[dict], json_mode: bool = False) -> dict:
@@ -39,6 +49,7 @@ def complete(system: str, messages: list[dict], json_mode: bool = False) -> dict
             raise ValueError("json_mode 를 쓰려면 프롬프트에 'JSON' 이라는 단어가 들어 있어야 합니다.")
         options["response_format"] = {"type": "json_object"}
 
+    options[OUTPUT_TOKEN_PARAM] = MAX_OUTPUT_TOKENS
     resp = _client().chat.completions.create(model=model, messages=full_messages, **options)
     # content 가 None 으로 올 수 있다(모델이 응답을 거부한 경우 등). 빈 문자열로 바꿔
     # 호출한 쪽에서 "파싱 실패"로 자연스럽게 처리되게 한다.
@@ -64,6 +75,7 @@ def complete_with_tools(system: str, messages: list[dict], tools: list[dict], al
         tool_choice="auto" if allow_tools else "none",
         # 한 번에 도구를 여러 개 부르면 질문당 호출 수의 상한을 정할 수 없다. 한 단계에 하나만 부르게 한다.
         parallel_tool_calls=False,
+        **{OUTPUT_TOKEN_PARAM: MAX_OUTPUT_TOKENS},
     )
     message = resp.choices[0].message
     calls = [{"id": c.id, "name": c.function.name, "arguments": c.function.arguments}
