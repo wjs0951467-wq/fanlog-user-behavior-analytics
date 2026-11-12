@@ -198,31 +198,31 @@ def write_today_log(*call_counts):
     (folder / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 
-def test_input_is_blocked_when_todays_total_reaches_the_daily_limit(monkeypatch):
+@pytest.mark.parametrize("used, blocked", [(0, False), (90, False), (91, True), (100, True)])
+def test_daily_boundary_is_the_same_rule_as_the_session_limit(monkeypatch, used, blocked):
     calls = script_agent(monkeypatch, says("호출되면 안 된다"))
-    write_today_log(60, 40)  # 합계 100
+    write_today_log(used - 40, 40) if used >= 40 else write_today_log(used)
     at = new_app()  # 이 세션은 한 번도 쓰지 않았다 (새로고침으로 세션 카운터가 0 이 된 경우)
 
-    assert at.session_state["calls_total"] == 0
-    assert at.text_area[0].disabled and at.button[0].disabled
-    assert any("일일" in e.value and "100회" in e.value for e in at.error) and calls == []
-    assert at.metric[3].value == "100회 / 100회"
-
-
-def test_input_is_open_just_below_the_daily_limit(monkeypatch):
-    script_agent(monkeypatch, says("호출되면 안 된다"))
-    write_today_log(60, 39)  # 합계 99
-    at = new_app()
-    assert not at.text_area[0].disabled and not at.button[0].disabled and not at.error and not at.warning
-    assert at.metric[3].value == "99회 / 100회"
+    assert at.session_state["calls_total"] == 0 and calls == []
+    assert at.text_area[0].disabled is blocked and at.button[0].disabled is blocked
+    assert at.metric[3].value == f"{used}회 / 100회"
+    day_errors = [e.value for e in at.error if "일일" in e.value]
+    assert bool(day_errors) is blocked
+    if blocked:
+        assert "10회" in day_errors[0] and "100회" in day_errors[0]
+    else:
+        assert not at.error and not at.warning
 
 
 def test_daily_limit_can_be_changed_with_the_environment(monkeypatch):
     script_agent(monkeypatch, says("호출되면 안 된다"))
-    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "5")
-    write_today_log(5)
-    at = new_app()
-    assert at.button[0].disabled and at.metric[3].value == "5회 / 5회"
+    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "25")
+    write_today_log(14)
+    assert not new_app().button[0].disabled  # 남은 11회
+    write_today_log(16)
+    at = new_app()  # 남은 9회
+    assert at.button[0].disabled and at.metric[3].value == "16회 / 25회"
 
 
 def test_yesterdays_log_does_not_count_today(monkeypatch):
@@ -233,10 +233,54 @@ def test_yesterdays_log_does_not_count_today(monkeypatch):
     assert not at.button[0].disabled and at.metric[3].value == "0회 / 100회"
 
 
-def test_unreadable_log_warns_but_does_not_block(monkeypatch):
+def write_today_raw(*lines):
+    agent.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def good(n):
+    return json.dumps({"usage": {"llm_calls": n}})
+
+
+def test_broken_lines_below_the_threshold_warn_with_the_lower_bound_but_do_not_block(monkeypatch):
     script_agent(monkeypatch, says("호출되면 안 된다"))
-    agent.LOG_DIR.mkdir(parents=True)
-    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("{깨진 줄\n", encoding="utf-8")
+    write_today_raw(good(20), "{깨진 줄", good(30), "또 깨진 줄")  # 하한값 50, 깨진 줄 2개
+    at = new_app()
+
+    assert not at.text_area[0].disabled and not at.button[0].disabled
+    warning = next(w.value for w in at.warning if "깨진 줄" in w.value)
+    assert "2개" in warning and "하한값" in warning and "더 많을 수 있음" in warning
+    assert not any("확인하지 못함" in w.value for w in at.warning)  # 파일은 읽었으므로 다른 경고다
+    assert at.metric[3].value == "50회 이상 / 100회"
+
+
+def test_broken_lines_do_not_prevent_blocking_when_the_lower_bound_already_reaches_it(monkeypatch):
+    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+    write_today_raw(good(60), "{깨진 줄", good(31))  # 하한값 91 → 실제는 이상이므로 막아도 오탐이 아니다
+    at = new_app()
+
+    assert at.text_area[0].disabled and at.button[0].disabled and calls == []
+    assert any("일일" in e.value for e in at.error)
+    assert any("깨진 줄 1개" in w.value for w in at.warning)  # 막혀도 합계가 하한값이라는 점은 알린다
+
+
+@pytest.mark.parametrize("broken, blocked", [(1, False), (4, False), (5, True), (9, True)])
+def test_five_or_more_broken_lines_block_even_when_the_lower_bound_is_low(monkeypatch, broken, blocked):
+    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+    write_today_raw(good(3), *(["{깨진 줄"] * broken))  # 하한값은 3회뿐이라 한도로는 한참 남았다
+    at = new_app()
+
+    assert at.text_area[0].disabled is blocked and at.button[0].disabled is blocked and calls == []
+    errors = [e.value for e in at.error]
+    assert any("로그가 많이 깨져 사용량을 확인할 수 없습니다. logs/ 를 점검하세요." in e for e in errors) is blocked
+    assert not any("남은 호출" in e for e in errors)  # 한도 문구가 아니라 로그 점검 문구가 나온다
+    assert any(f"깨진 줄 {broken}개" in w.value and "하한값" in w.value for w in at.warning)  # 하한값 경고는 같이 나온다
+    assert at.metric[3].value == "3회 이상 / 100회"
+
+
+def test_unreadable_log_file_warns_but_does_not_block(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").mkdir(parents=True)  # 파일 자리에 폴더: 읽을 수 없다
     at = new_app()
 
     assert not at.text_area[0].disabled and not at.button[0].disabled  # 막지 않는다
@@ -244,10 +288,9 @@ def test_unreadable_log_warns_but_does_not_block(monkeypatch):
     assert at.metric[3].value == "?회 / 100회"
 
 
-def test_unreadable_log_still_applies_the_session_limit(monkeypatch):
+def test_unreadable_log_file_still_applies_the_session_limit(monkeypatch):
     script_agent(monkeypatch, says("호출되면 안 된다"))
-    agent.LOG_DIR.mkdir(parents=True)
-    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("{깨진 줄\n", encoding="utf-8")
+    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").mkdir(parents=True)
     at = session_app(25)
     assert at.button[0].disabled and any("일일 한도를 확인하지 못함" in w.value for w in at.warning)
 
@@ -255,13 +298,13 @@ def test_unreadable_log_still_applies_the_session_limit(monkeypatch):
 def test_daily_total_grows_after_a_question_and_blocks_when_it_reaches_the_limit(monkeypatch):
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())
     script_agent(monkeypatch, says("", call("ask_data", question="q")), says("답"))
-    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "3")  # 이 질문이 3회를 쓰면 정확히 상한
+    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "12")  # 이 질문이 3회를 쓰면 남은 9회: 다음 질문은 막힌다
     at = new_app()
     assert not at.button[0].disabled
 
     submit(at)
 
-    assert at.metric[3].value == "3회 / 3회"
+    assert at.metric[3].value == "3회 / 12회"
     assert at.text_area[0].disabled and at.button[0].disabled
     assert any("일일" in e.value for e in at.error)
 

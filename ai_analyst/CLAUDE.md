@@ -10,7 +10,7 @@ FANLOG DB(PostgreSQL)에 자연어로 질문하면 SQL을 생성·검증·실행
 - 완료: Day 3 이탈 위험 점수와 세그먼트(app/churn.py).
 - 완료: Day 4 A~C단계 (A: 에이전트 루프, 호출 예산, 로그 / B: 도구 3개 ask_data, get_churn_segments, recommend_actions,
   app/actions.py, 숫자 점검 app/numcheck.py, ask() 오류 문장 정리, 표본 수 "검증 불가" 시 코드가 계산한 대안 목록 /
-  C: Streamlit 화면 ui/app.py, 세션 한도 30회와 일일 한도 100회). pytest 386개 통과 (DB 와 LLM 은 mock).
+  C: Streamlit 화면 ui/app.py, 세션 한도 30회와 일일 한도 100회). pytest 400개 통과 (DB 와 LLM 은 mock).
 - 남은 것: D단계(실제 OpenAI 로 에이전트와 화면을 돌려 보는 것. 사용자가 직접 하고, 지금까지 실제 호출로 돌려 본 적은 없다),
   E단계(문서 정리).
 - 화면 실행 (ai_analyst 폴더에서, 접속 http://localhost:8502):

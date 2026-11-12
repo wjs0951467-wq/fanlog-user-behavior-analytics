@@ -52,29 +52,55 @@ def daily_limit(environ=None) -> int:
     return value if value > 0 else DAILY_CALL_LIMIT
 
 
-def daily_calls(log_dir, now=None) -> int | None:
-    """logs/agent_YYYYMMDD.jsonl 의 당일 LLM 호출 합계. 읽지 못하면 None.
+def daily_calls(log_dir, now=None) -> tuple[int | None, int]:
+    """logs/agent_YYYYMMDD.jsonl 의 당일 LLM 호출 합계를 (합계, 건너뛴 줄 수) 로 돌려준다.
 
-    파일이 없으면 오늘 질문이 아직 없는 것이므로 0 이다. 파일이 있는데 읽을 수 없거나 한 줄이라도 깨져 있으면
-    합계를 믿을 수 없으므로 0 으로 치지 않고 None 을 돌려준다 (호출하는 쪽이 "확인하지 못함"을 보여준다).
+    - 파일이 없으면 오늘 질문이 아직 없는 것이므로 (0, 0).
+    - 깨진 줄(JSON 이 아니거나 usage.llm_calls 가 없거나 글자가 깨진 줄)은 건너뛰고 개수를 센다.
+      이때 합계는 "하한값"이다: 실제 사용량은 이 값보다 크거나 같다. (깨진 줄에도 호출이 있었을 수 있으므로)
+      하한값이 이미 차단 기준에 닿았으면 막아도 오탐이 아니고, 닿지 않았으면 화면이 "실제는 더 많을 수 있음"을 알린다.
+    - 파일 자체를 읽지 못하면(권한, 파일 자리에 폴더 등) (None, 0). 화면이 "확인하지 못함"을 알린다.
     """
     path = Path(log_dir) / f"agent_{(now or datetime.now()):%Y%m%d}.jsonl"
     try:
         if not path.exists():
-            return 0
-        total = 0
-        with path.open(encoding="utf-8") as f:
-            for line in f:
-                if line.strip():
-                    total += int(json.loads(line)["usage"]["llm_calls"])
-        return total
+            return 0, 0
+        raw_lines = path.read_bytes().splitlines()
     except Exception:
-        return None
+        return None, 0
+    total, skipped = 0, 0
+    for raw in raw_lines:
+        try:
+            line = raw.decode("utf-8")
+            if not line.strip():
+                continue  # 빈 줄은 깨진 줄이 아니다
+            total += int(json.loads(line)["usage"]["llm_calls"])
+        except Exception:
+            skipped += 1
+    return total, skipped
 
 
-def daily_blocked(used: int | None, limit: int) -> bool:
-    """일일 상한을 넘었으면 막는다. 확인하지 못했으면(None) 막지 않는다 (화면이 경고를 보여준다)."""
-    return used is not None and used >= limit
+# 깨진 줄이 이만큼 이상이면 하한값을 믿지 못한다고 보고 막는다 (환경변수로 바꾸지 않는 고정값)
+MAX_BROKEN_LINES = 5
+BROKEN_LOG_MESSAGE = "로그가 많이 깨져 사용량을 확인할 수 없습니다. logs/ 를 점검하세요."
+
+
+def log_too_broken(skipped: int) -> bool:
+    return skipped >= MAX_BROKEN_LINES
+
+
+def daily_blocked(used: int | None, per_question: int, limit: int, skipped: int = 0) -> bool:
+    """일일 입력 차단 여부. 아래 중 하나면 막는다.
+
+    1) 깨진 줄이 MAX_BROKEN_LINES 개 이상: 하한값이 기준 미만이어도 막는다 (의도한 동작).
+       줄이 그만큼 깨졌으면 빠진 호출이 얼마나 되는지 알 수 없어서, 하한값만 믿고 열어 두지 않는다.
+    2) 세션 한도와 같은 규칙: 일일 남은 한도가 질문 1개의 최대 사용량보다 적음.
+       used 가 하한값이어도 같다 (실제 합계는 더 크거나 같으므로 막는 쪽이 틀리지 않는다).
+    파일을 읽지 못했으면(used 가 None, skipped 0) 막지 않는다 (화면이 "확인하지 못함" 경고를 보여준다).
+    """
+    if log_too_broken(skipped):
+        return True
+    return used is not None and calls_blocked(used, per_question, limit)
 
 
 def usage_text(usage: dict | None) -> str:

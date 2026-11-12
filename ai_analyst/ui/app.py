@@ -9,8 +9,8 @@
 - 에이전트를 함수로 직접 부른다 (agent.run_agent). 별도 서버(FastAPI /chat)는 만들지 않는다.
 - OpenAI 호출은 "제출" 버튼을 눌렀을 때만 일어난다. 위젯을 바꾸거나 화면이 다시 그려질 때는 부르지 않는다.
 - 결과는 st.session_state 에 두고, 다시 그릴 때는 거기서 꺼내 그린다.
-- 입력창과 제출 버튼을 막는 조건: 세션 남은 한도(30회 기준)가 10회 미만이거나, 오늘 전체 호출이 일일 상한을 넘었을 때.
-  일일 합계는 logs/ 에서 읽고, 읽지 못하면 막지 않고 경고를 보여준다.
+- 입력창과 제출 버튼을 막는 조건: 세션 남은 한도(30회 기준)가 10회 미만이거나, 일일 남은 한도(기본 100회 기준)가 10회 미만일 때.
+  일일 합계는 logs/ 에서 읽고(깨진 줄은 건너뛴 하한값), 파일을 읽지 못하면 막지 않고 경고를 보여준다.
 """
 import sys
 from pathlib import Path
@@ -44,11 +44,12 @@ total = st.session_state.calls_total
 last = st.session_state.result
 
 # 두 가지 한도 중 하나라도 걸리면 입력을 막는다 (공용 크레딧 보호)
-# (a) 세션: 남은 한도가 질문 1개의 최대 사용량보다 적으면. (b) 하루: logs/ 의 오늘 호출 합계(모든 세션)가 상한에 닿으면.
+# 두 한도 모두 같은 규칙: 남은 한도가 질문 1개의 최대 사용량보다 적으면 막는다.
+# (a) 세션 누적. (b) 하루: logs/ 의 오늘 호출 합계(모든 세션).
 session_blocked = view.calls_blocked(total, agent.MAX_LLM_CALLS)
 daily_limit = view.daily_limit()
-daily_used = view.daily_calls(agent.LOG_DIR)  # 읽지 못하면 None
-daily_blocked = view.daily_blocked(daily_used, daily_limit)
+daily_used, daily_skipped = view.daily_calls(agent.LOG_DIR)  # 읽지 못하면 None, 깨진 줄이 있으면 하한값
+daily_blocked = view.daily_blocked(daily_used, agent.MAX_LLM_CALLS, daily_limit, daily_skipped)
 blocked = session_blocked or daily_blocked
 
 # ---------- 호출 수 ----------
@@ -56,12 +57,19 @@ c1, c2, c3, c4 = st.columns(4)
 c1.metric("이번 질문의 LLM 호출", f"{last['usage']['llm_calls']}회" if last else "-")
 c2.metric("세션 누적 호출", f"{total}회")
 c3.metric("세션 한도", f"{view.SESSION_CALL_LIMIT}회")
-c4.metric("오늘 전체 호출 / 일일 한도", f"{daily_used if daily_used is not None else '?'}회 / {daily_limit}회")
+daily_text = "?회" if daily_used is None else f"{daily_used}회" + (" 이상" if daily_skipped else "")
+c4.metric("오늘 전체 호출 / 일일 한도", f"{daily_text} / {daily_limit}회")
 if session_blocked:
     st.error(f"세션 호출 한도({view.SESSION_CALL_LIMIT}회)에서 남은 호출이 {max(view.SESSION_CALL_LIMIT - total, 0)}회로, "
              f"질문 1개의 최대 사용량({agent.MAX_LLM_CALLS}회)보다 적어서 입력을 막았습니다.")
-if daily_blocked:
-    st.error(f"일일 호출 한도({daily_limit}회)에 도달해서 입력을 막았습니다. 한도는 환경변수 {view.DAILY_LIMIT_ENV} 로 조정합니다.")
+if view.log_too_broken(daily_skipped):
+    st.error(view.BROKEN_LOG_MESSAGE)
+elif daily_blocked:
+    st.error(f"일일 호출 한도({daily_limit}회)에서 남은 호출이 {max(daily_limit - daily_used, 0)}회로, "
+             f"질문 1개의 최대 사용량({agent.MAX_LLM_CALLS}회)보다 적어서 입력을 막았습니다. "
+             f"한도는 환경변수 {view.DAILY_LIMIT_ENV} 로 조정합니다.")
+if daily_skipped:
+    st.warning(f"로그에서 깨진 줄 {daily_skipped}개를 무시한 하한값이라 실제 사용량은 더 많을 수 있음 (일일 합계는 {daily_used}회 이상).")
 if daily_used is None:
     st.warning("일일 한도를 확인하지 못함: logs/ 의 오늘 기록을 읽지 못했습니다. 이 경우 입력을 막지 않고 세션 한도만 적용합니다.")
 

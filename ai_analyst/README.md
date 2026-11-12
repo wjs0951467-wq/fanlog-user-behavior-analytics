@@ -28,4 +28,4 @@ uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
 python -m streamlit run ui/app.py --server.port 8502 --server.headless true --server.address localhost
 ```
 화면은 OpenAI 호출(공용 크레딧)을 쓰므로 외부에 열지 않는다 (`--server.address localhost` 를 빼지 않는다).
-호출 한도: 세션 30회(남은 한도가 10회 미만이면 입력 차단), 하루 100회(환경변수 `FANLOG_DAILY_CALL_LIMIT` 로 조정).
+호출 한도: 세션 30회, 하루 100회(환경변수 `FANLOG_DAILY_CALL_LIMIT` 로 조정). 둘 다 남은 한도가 10회 미만이면 입력 차단.

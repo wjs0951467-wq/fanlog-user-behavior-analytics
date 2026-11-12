@@ -56,29 +56,50 @@ NOW = datetime(2026, 3, 15, 12, 0)
 
 
 def test_daily_calls_sums_todays_log_only(tmp_path):
-    folder = write_log(tmp_path, [record(3), record(4), ""])  # 빈 줄은 건너뛴다
+    folder = write_log(tmp_path, [record(3), record(4), ""])  # 빈 줄은 깨진 줄이 아니다
     write_log(tmp_path, [record(50)], day="20260314")  # 어제 로그는 세지 않는다
-    assert view.daily_calls(folder, NOW) == 7
+    assert view.daily_calls(folder, NOW) == (7, 0)
 
 
 def test_daily_calls_is_zero_when_there_is_no_log_yet(tmp_path):
-    assert view.daily_calls(tmp_path / "없는폴더", NOW) == 0
+    assert view.daily_calls(tmp_path / "없는폴더", NOW) == (0, 0)
 
 
-@pytest.mark.parametrize("bad_line", ["{깨진 json", json.dumps({"question": "q"}), json.dumps({"usage": {"llm_calls": "많이"}})])
-def test_daily_calls_is_none_when_the_log_cannot_be_trusted(tmp_path, bad_line):
-    folder = write_log(tmp_path, [record(3), bad_line])
-    assert view.daily_calls(folder, NOW) is None  # 일부만 더한 값을 0 이나 합계처럼 쓰지 않는다
+@pytest.mark.parametrize("bad_line", ["{깨진 json", json.dumps({"question": "q"}), json.dumps({"usage": {"llm_calls": "많이"}}), "[1, 2]"])
+def test_broken_lines_are_skipped_and_counted_so_the_total_is_a_lower_bound(tmp_path, bad_line):
+    folder = write_log(tmp_path, [record(3), bad_line, record(4), bad_line])
+    assert view.daily_calls(folder, NOW) == (7, 2)  # 읽을 수 있는 줄의 합계(하한값)와 건너뛴 줄 수
 
 
-def test_daily_calls_is_none_when_the_path_is_not_readable(tmp_path):
+def test_a_line_with_broken_bytes_is_skipped_not_fatal(tmp_path):
+    folder = tmp_path / "logs"
+    folder.mkdir()
+    bad = bytes([0xff, 0xfe, 0x00]) + " 깨진 바이트".encode()
+    (folder / "agent_20260315.jsonl").write_bytes(record(3).encode() + b"\n" + bad + b"\n" + record(2).encode() + b"\n")
+    assert view.daily_calls(folder, NOW) == (5, 1)
+
+
+def test_daily_calls_is_none_when_the_file_cannot_be_read_at_all(tmp_path):
     (tmp_path / "logs" / "agent_20260315.jsonl").mkdir(parents=True)  # 파일 자리에 폴더가 있다
-    assert view.daily_calls(tmp_path / "logs", NOW) is None
+    assert view.daily_calls(tmp_path / "logs", NOW) == (None, 0)
 
 
-@pytest.mark.parametrize("used, blocked", [(0, False), (99, False), (100, True), (150, True), (None, False)])
-def test_daily_blocked_only_when_known_and_at_the_limit(used, blocked):
-    assert view.daily_blocked(used, 100) is blocked  # None(확인 못함)은 막지 않는다
+@pytest.mark.parametrize("used, blocked", [(0, False), (90, False), (91, True), (99, True), (100, True), (150, True), (None, False)])
+def test_daily_blocked_uses_the_same_rule_as_the_session_limit(used, blocked):
+    assert view.daily_blocked(used, 10, 100) is blocked  # 90 열림 / 91 막힘 / 100 막힘, None(확인 못함)은 막지 않는다
+    if used is not None:
+        assert view.daily_blocked(used, 10, 100) == view.calls_blocked(used, 10, 100)  # 세션 규칙과 한 함수를 쓴다
+
+
+def test_too_many_broken_lines_block_even_when_the_lower_bound_is_low():
+    assert view.MAX_BROKEN_LINES == 5
+    assert [view.daily_blocked(10, 10, 100, skipped) for skipped in (0, 1, 4, 5, 6, 50)] == [False, False, False, True, True, True]
+    assert view.log_too_broken(4) is False and view.log_too_broken(5) is True
+    assert "로그가 많이 깨져 사용량을 확인할 수 없습니다" in view.BROKEN_LOG_MESSAGE and "logs/" in view.BROKEN_LOG_MESSAGE
+
+
+def test_the_quota_rule_still_applies_with_few_broken_lines():
+    assert view.daily_blocked(91, 10, 100, 4) is True and view.daily_blocked(90, 10, 100, 4) is False
 
 
 @pytest.mark.parametrize("env, expected", [({}, 100), ({"FANLOG_DAILY_CALL_LIMIT": "250"}, 250), ({"FANLOG_DAILY_CALL_LIMIT": " 5 "}, 5),
