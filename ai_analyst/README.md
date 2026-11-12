@@ -24,4 +24,8 @@ pytest
 python -m app.text2sql "아티스트별 현재 팔로워 수 상위 5명은?"
 # 6) API 서버
 uvicorn app.main:app --reload     # http://127.0.0.1:8000/docs
+# 7) 화면 (Streamlit) - ai_analyst 폴더에서. 접속: http://localhost:8502
+python -m streamlit run ui/app.py --server.port 8502 --server.headless true --server.address localhost
 ```
+화면은 OpenAI 호출(공용 크레딧)을 쓰므로 외부에 열지 않는다 (`--server.address localhost` 를 빼지 않는다).
+호출 한도: 세션 30회(남은 한도가 10회 미만이면 입력 차단), 하루 100회(환경변수 `FANLOG_DAILY_CALL_LIMIT` 로 조정).

@@ -6,6 +6,7 @@
 """
 import json
 import re
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -24,7 +25,8 @@ SEG_ARGS = {"tier": "상위 10%군", "purchase": "있음"}  # 가짜 report 에�
 
 @pytest.fixture(autouse=True)
 def isolated(monkeypatch, tmp_path):
-    monkeypatch.setattr(agent, "LOG_DIR", tmp_path / "logs")  # 진짜 logs/ 에 쓰지 않는다
+    monkeypatch.setattr(agent, "LOG_DIR", tmp_path / "logs")  # 진짜 logs/ 에 쓰지 않고, 진짜 일일 합계도 읽지 않는다
+    monkeypatch.delenv(view.DAILY_LIMIT_ENV, raising=False)  # 사용자의 환경 설정이 시험 결과를 바꾸지 않게 한다
     monkeypatch.setattr(tools, "get_report", lambda: make_report())
     monkeypatch.setattr(tools, "complete", FakeComplete(reply()))
 
@@ -79,7 +81,8 @@ def test_first_screen_renders_without_calling_the_agent(monkeypatch):
     assert not at.exception
     assert at.title[0].value == "FANLOG AI 분석가"
     assert at.text_area[0].max_chars == 500 and at.button[0].label == "제출"
-    assert [m.value for m in at.metric] == ["-", "0회", "30회"]  # 이번 질문 / 세션 누적 / 세션 한도
+    assert [m.value for m in at.metric] == ["-", "0회", "30회", "0회 / 100회"]  # 이번 질문 / 세션 누적 / 세션 한도 / 오늘 전체와 일일 한도
+    assert not at.warning and "--server.address localhost" in everything(at)  # 외부에 열지 않는다는 안내
     assert not at.text_area[0].disabled and not at.button[0].disabled
     assert calls == []  # 화면을 그리는 것만으로는 LLM 을 부르지 않는다
 
@@ -104,7 +107,7 @@ def test_submit_runs_the_agent_once_and_keeps_the_result_in_session_state(monkey
 
     assert not at.exception and len(calls) == 2  # 에이전트 2회 (도구 호출 1 + 최종 답 1)
     assert at.session_state["calls_total"] == 3  # 에이전트 2회 + ask 내부 1회
-    assert [m.value for m in at.metric] == ["3회", "3회", "30회"]
+    assert [m.value for m in at.metric] == ["3회", "3회", "30회", "3회 / 100회"]  # 끝난 질문은 로그를 거쳐 일일 합계에 들어간다
     assert at.session_state["result"]["question"] == "현재 휴면 팬은 몇 명이야?"
     assert "휴면 팬은 1,643명이고" in "".join(t.value for t in at.text)
 
@@ -142,36 +145,125 @@ def test_empty_question_makes_no_call(monkeypatch, question):
 
 
 # ---------- 세션 한도 ----------
-def test_input_is_blocked_at_the_session_limit(monkeypatch):
-    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+def session_app(total):
     at = AppTest.from_file(APP_FILE, default_timeout=30)
-    at.session_state["calls_total"] = 30
-    at.run()
+    at.session_state["calls_total"] = total
+    return at.run()
+
+
+@pytest.mark.parametrize("total", [21, 29, 30, 39])
+def test_input_is_blocked_when_the_remaining_session_limit_is_under_one_question(monkeypatch, total):
+    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+    at = session_app(total)
 
     assert at.text_area[0].disabled and at.button[0].disabled
-    assert any("한도" in e.value for e in at.error) and calls == []
+    assert any("한도" in e.value and "10회" in e.value for e in at.error) and calls == []
 
 
-def test_input_is_still_open_just_below_the_limit(monkeypatch):
+@pytest.mark.parametrize("total", [0, 19, 20])
+def test_input_is_open_while_one_whole_question_still_fits(monkeypatch, total):
     script_agent(monkeypatch, says("호출되면 안 된다"))
-    at = AppTest.from_file(APP_FILE, default_timeout=30)
-    at.session_state["calls_total"] = 29
-    at.run()
+    at = session_app(total)  # 20회 사용: 남은 10회로 질문 하나가 끝까지 돌 수 있다
     assert not at.text_area[0].disabled and not at.button[0].disabled and not at.error
 
 
-def test_a_question_that_reaches_the_limit_blocks_the_next_one(monkeypatch):
+def test_a_blocked_widget_cannot_be_used_at_all(monkeypatch):
+    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+    at = session_app(25)
+    with pytest.raises(Exception, match="disabled"):  # AppTest 도 브라우저처럼 비활성 위젯을 못 건드린다
+        at.text_area[0].set_value("막혔는데 입력")
+    with pytest.raises(Exception, match="disabled"):
+        at.button[0].click()
+    assert calls == [] and at.session_state["result"] is None
+
+
+def test_a_question_that_leaves_less_than_one_question_blocks_the_next_one(monkeypatch):
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())
     script_agent(monkeypatch, says("", call("ask_data", question="q")), says("답"))
-    at = AppTest.from_file(APP_FILE, default_timeout=30)
-    at.session_state["calls_total"] = 27  # 이 질문이 3회를 쓰면 정확히 30회
-    at.run()
+    at = session_app(18)  # 이 질문이 3회를 쓰면 21회: 남은 9회라 다음 질문은 막는다
+    assert not at.button[0].disabled
 
     submit(at)
 
-    assert at.session_state["calls_total"] == 30
+    assert at.session_state["calls_total"] == 21
     assert at.text_area[0].disabled and at.button[0].disabled  # 제출이 끝난 화면에서 바로 막힌다
     assert any("한도" in e.value for e in at.error)
+
+
+# ---------- 일일 상한 (logs/ 의 당일 합계) ----------
+def write_today_log(*call_counts):
+    folder = agent.LOG_DIR
+    folder.mkdir(parents=True, exist_ok=True)
+    lines = [json.dumps({"question": "q", "usage": {"llm_calls": n, "tokens": 1}}) for n in call_counts]
+    (folder / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_input_is_blocked_when_todays_total_reaches_the_daily_limit(monkeypatch):
+    calls = script_agent(monkeypatch, says("호출되면 안 된다"))
+    write_today_log(60, 40)  # 합계 100
+    at = new_app()  # 이 세션은 한 번도 쓰지 않았다 (새로고침으로 세션 카운터가 0 이 된 경우)
+
+    assert at.session_state["calls_total"] == 0
+    assert at.text_area[0].disabled and at.button[0].disabled
+    assert any("일일" in e.value and "100회" in e.value for e in at.error) and calls == []
+    assert at.metric[3].value == "100회 / 100회"
+
+
+def test_input_is_open_just_below_the_daily_limit(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    write_today_log(60, 39)  # 합계 99
+    at = new_app()
+    assert not at.text_area[0].disabled and not at.button[0].disabled and not at.error and not at.warning
+    assert at.metric[3].value == "99회 / 100회"
+
+
+def test_daily_limit_can_be_changed_with_the_environment(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "5")
+    write_today_log(5)
+    at = new_app()
+    assert at.button[0].disabled and at.metric[3].value == "5회 / 5회"
+
+
+def test_yesterdays_log_does_not_count_today(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    agent.LOG_DIR.mkdir(parents=True)
+    (agent.LOG_DIR / "agent_20200101.jsonl").write_text(json.dumps({"usage": {"llm_calls": 999}}) + "\n", encoding="utf-8")
+    at = new_app()
+    assert not at.button[0].disabled and at.metric[3].value == "0회 / 100회"
+
+
+def test_unreadable_log_warns_but_does_not_block(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    agent.LOG_DIR.mkdir(parents=True)
+    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("{깨진 줄\n", encoding="utf-8")
+    at = new_app()
+
+    assert not at.text_area[0].disabled and not at.button[0].disabled  # 막지 않는다
+    assert any("일일 한도를 확인하지 못함" in w.value for w in at.warning)
+    assert at.metric[3].value == "?회 / 100회"
+
+
+def test_unreadable_log_still_applies_the_session_limit(monkeypatch):
+    script_agent(monkeypatch, says("호출되면 안 된다"))
+    agent.LOG_DIR.mkdir(parents=True)
+    (agent.LOG_DIR / f"agent_{datetime.now():%Y%m%d}.jsonl").write_text("{깨진 줄\n", encoding="utf-8")
+    at = session_app(25)
+    assert at.button[0].disabled and any("일일 한도를 확인하지 못함" in w.value for w in at.warning)
+
+
+def test_daily_total_grows_after_a_question_and_blocks_when_it_reaches_the_limit(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result())
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("답"))
+    monkeypatch.setenv(view.DAILY_LIMIT_ENV, "3")  # 이 질문이 3회를 쓰면 정확히 상한
+    at = new_app()
+    assert not at.button[0].disabled
+
+    submit(at)
+
+    assert at.metric[3].value == "3회 / 3회"
+    assert at.text_area[0].disabled and at.button[0].disabled
+    assert any("일일" in e.value for e in at.error)
 
 
 # ---------- 답변은 일반 텍스트 ----------

@@ -6,8 +6,11 @@
   (링크, 이미지, 취소선 같은 서식이 켜지면 데이터 속 문장이 화면을 바꿀 수 있다.)
 """
 import json
+import os
 import re
+from datetime import datetime
 from decimal import Decimal
+from pathlib import Path
 
 import pandas as pd
 
@@ -25,9 +28,53 @@ def escape_markdown(text) -> str:
     return _MARKDOWN_SPECIALS.sub(r"\\\1", "" if text is None else str(text))
 
 
-def calls_blocked(total: int, limit: int = SESSION_CALL_LIMIT) -> bool:
-    """세션 누적 호출이 한도에 닿으면 입력을 막는다."""
-    return total >= limit
+def calls_blocked(total: int, per_question: int, limit: int = SESSION_CALL_LIMIT) -> bool:
+    """남은 세션 한도가 질문 1개의 최대 사용량(per_question)보다 적으면 입력을 막는다.
+
+    질문 1개가 최대 per_question 회까지 쓸 수 있어서, 한도에 "닿은 뒤"에 막으면 한도를 넘겨 쓰게 된다.
+    (예: 29회에서 낸 질문이 10회를 쓰면 39회.) 그래서 한도 안에서 한 질문이 끝까지 돌 수 있을 때만 연다.
+    """
+    return limit - total < per_question
+
+
+# 하루 상한: 서버가 돌아가는 동안 모든 세션의 호출 합계 (logs/ 의 당일 기록으로 센다)
+DAILY_CALL_LIMIT = 100
+DAILY_LIMIT_ENV = "FANLOG_DAILY_CALL_LIMIT"
+
+
+def daily_limit(environ=None) -> int:
+    """환경변수 FANLOG_DAILY_CALL_LIMIT 로 조정한다. 없거나 양의 정수가 아니면 기본값(100)을 쓴다."""
+    raw = (environ if environ is not None else os.environ).get(DAILY_LIMIT_ENV)
+    try:
+        value = int(str(raw).strip())
+    except (TypeError, ValueError):
+        return DAILY_CALL_LIMIT
+    return value if value > 0 else DAILY_CALL_LIMIT
+
+
+def daily_calls(log_dir, now=None) -> int | None:
+    """logs/agent_YYYYMMDD.jsonl 의 당일 LLM 호출 합계. 읽지 못하면 None.
+
+    파일이 없으면 오늘 질문이 아직 없는 것이므로 0 이다. 파일이 있는데 읽을 수 없거나 한 줄이라도 깨져 있으면
+    합계를 믿을 수 없으므로 0 으로 치지 않고 None 을 돌려준다 (호출하는 쪽이 "확인하지 못함"을 보여준다).
+    """
+    path = Path(log_dir) / f"agent_{(now or datetime.now()):%Y%m%d}.jsonl"
+    try:
+        if not path.exists():
+            return 0
+        total = 0
+        with path.open(encoding="utf-8") as f:
+            for line in f:
+                if line.strip():
+                    total += int(json.loads(line)["usage"]["llm_calls"])
+        return total
+    except Exception:
+        return None
+
+
+def daily_blocked(used: int | None, limit: int) -> bool:
+    """일일 상한을 넘었으면 막는다. 확인하지 못했으면(None) 막지 않는다 (화면이 경고를 보여준다)."""
+    return used is not None and used >= limit
 
 
 def usage_text(usage: dict | None) -> str:

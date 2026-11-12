@@ -8,9 +8,14 @@ FANLOG DB(PostgreSQL)에 자연어로 질문하면 SQL을 생성·검증·실행
 - 완료: 읽기 전용 DB 계정(fanlog_ro), SQL 가드레일(app/sql_guard.py, pytest 23개),
   DB 프로파일링(scripts/profile_db.py, 뷰 포함), 시맨틱 레이어 v3, Text-to-SQL 1회 호출(app/text2sql.py).
 - 완료: Day 3 이탈 위험 점수와 세그먼트(app/churn.py).
-- 완료: Day 4 B단계 (A: 에이전트 루프, 호출 예산, 로그 / B: 도구 3개 ask_data, get_churn_segments, recommend_actions,
-  app/actions.py, 숫자 점검 app/numcheck.py, ask() 오류 문장 정리). pytest 290개 통과 (DB 와 LLM 은 mock).
-  아직 없는 것: Day 4 의 화면(Streamlit). 실제 OpenAI 로 에이전트를 돌려 본 적은 없다 (mock 테스트로만 검증).
+- 완료: Day 4 A~C단계 (A: 에이전트 루프, 호출 예산, 로그 / B: 도구 3개 ask_data, get_churn_segments, recommend_actions,
+  app/actions.py, 숫자 점검 app/numcheck.py, ask() 오류 문장 정리, 표본 수 "검증 불가" 시 코드가 계산한 대안 목록 /
+  C: Streamlit 화면 ui/app.py, 세션 한도 30회와 일일 한도 100회). pytest 386개 통과 (DB 와 LLM 은 mock).
+- 남은 것: D단계(실제 OpenAI 로 에이전트와 화면을 돌려 보는 것. 사용자가 직접 하고, 지금까지 실제 호출로 돌려 본 적은 없다),
+  E단계(문서 정리).
+- 화면 실행 (ai_analyst 폴더에서, 접속 http://localhost:8502):
+  python -m streamlit run ui/app.py --server.port 8502 --server.headless true --server.address localhost
+  OpenAI 호출(공용 크레딧)을 쓰므로 외부에 열지 않는다. 제출 버튼을 누를 때만 호출한다.
 - LLM은 OpenAI API를 쓴다 (환경변수 OPENAI_API_KEY, FANLOG_MODEL). 모델명을 코드에 박지 않는다.
 - 사람이 직접 검증한 정답은 eval_notes.md 에 있다. 새 기능은 이 정답을 깨뜨리면 안 된다.
 

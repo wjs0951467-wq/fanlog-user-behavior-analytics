@@ -1,5 +1,6 @@
 """화면의 순수 함수(ui/view.py) 테스트. Streamlit 을 띄우지 않는다."""
-from datetime import date
+import json
+from datetime import date, datetime
 from decimal import Decimal
 
 import pandas as pd
@@ -33,10 +34,58 @@ def test_escape_markdown_keeps_korean_and_handles_none():
 
 
 # ---------- 세션 한도 ----------
-@pytest.mark.parametrize("total, blocked", [(0, False), (29, False), (30, True), (31, True), (39, True)])
-def test_calls_blocked_at_the_limit(total, blocked):
+@pytest.mark.parametrize("total, blocked", [(0, False), (19, False), (20, False), (21, True), (29, True), (30, True), (39, True)])
+def test_calls_blocked_when_remaining_is_less_than_one_question_can_use(total, blocked):
     assert view.SESSION_CALL_LIMIT == 30
-    assert view.calls_blocked(total) is blocked
+    assert view.calls_blocked(total, 10) is blocked  # 남은 한도가 10회 미만이면 막는다 (20회 사용: 남은 10회는 연다)
+
+
+# ---------- 일일 상한 ----------
+def write_log(tmp_path, lines, day="20260315"):
+    folder = tmp_path / "logs"
+    folder.mkdir(exist_ok=True)
+    (folder / f"agent_{day}.jsonl").write_text("\n".join(lines) + "\n", encoding="utf-8")
+    return folder
+
+
+def record(calls):
+    return json.dumps({"question": "q", "usage": {"llm_calls": calls, "tokens": 1}})
+
+
+NOW = datetime(2026, 3, 15, 12, 0)
+
+
+def test_daily_calls_sums_todays_log_only(tmp_path):
+    folder = write_log(tmp_path, [record(3), record(4), ""])  # 빈 줄은 건너뛴다
+    write_log(tmp_path, [record(50)], day="20260314")  # 어제 로그는 세지 않는다
+    assert view.daily_calls(folder, NOW) == 7
+
+
+def test_daily_calls_is_zero_when_there_is_no_log_yet(tmp_path):
+    assert view.daily_calls(tmp_path / "없는폴더", NOW) == 0
+
+
+@pytest.mark.parametrize("bad_line", ["{깨진 json", json.dumps({"question": "q"}), json.dumps({"usage": {"llm_calls": "많이"}})])
+def test_daily_calls_is_none_when_the_log_cannot_be_trusted(tmp_path, bad_line):
+    folder = write_log(tmp_path, [record(3), bad_line])
+    assert view.daily_calls(folder, NOW) is None  # 일부만 더한 값을 0 이나 합계처럼 쓰지 않는다
+
+
+def test_daily_calls_is_none_when_the_path_is_not_readable(tmp_path):
+    (tmp_path / "logs" / "agent_20260315.jsonl").mkdir(parents=True)  # 파일 자리에 폴더가 있다
+    assert view.daily_calls(tmp_path / "logs", NOW) is None
+
+
+@pytest.mark.parametrize("used, blocked", [(0, False), (99, False), (100, True), (150, True), (None, False)])
+def test_daily_blocked_only_when_known_and_at_the_limit(used, blocked):
+    assert view.daily_blocked(used, 100) is blocked  # None(확인 못함)은 막지 않는다
+
+
+@pytest.mark.parametrize("env, expected", [({}, 100), ({"FANLOG_DAILY_CALL_LIMIT": "250"}, 250), ({"FANLOG_DAILY_CALL_LIMIT": " 5 "}, 5),
+                                           ({"FANLOG_DAILY_CALL_LIMIT": "abc"}, 100), ({"FANLOG_DAILY_CALL_LIMIT": "0"}, 100),
+                                           ({"FANLOG_DAILY_CALL_LIMIT": "-3"}, 100), ({"FANLOG_DAILY_CALL_LIMIT": ""}, 100)])
+def test_daily_limit_comes_from_the_environment_with_a_safe_default(env, expected):
+    assert view.DAILY_CALL_LIMIT == 100 and view.daily_limit(env) == expected
 
 
 def test_usage_text_shows_total_and_sources():
