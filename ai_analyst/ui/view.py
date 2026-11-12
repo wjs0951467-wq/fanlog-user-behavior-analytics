@@ -82,6 +82,32 @@ def daily_calls(log_dir, now=None) -> tuple[int | None, int]:
     return total, skipped
 
 
+ENV_PROBLEM = "env"   # 파일을 읽는 문제(권한, 입출력, 글자 깨짐): 환경 탓이라서 "읽지 못함"으로 알린다
+BUG_PROBLEM = "bug"   # 코드가 잘못된 것으로 보이는 문제(TypeError 등, 반환 형태 불일치): 눈에 띄게 "내부 오류"로 알린다
+
+
+def read_daily_calls(log_dir) -> tuple:
+    """화면이 쓰는 안전한 일일 합계 읽기: (합계 또는 None, 건너뛴 줄 수, 문제) 를 돌려주고 절대 예외를 내지 않는다.
+
+    문제는 None(정상) / (ENV_PROBLEM, 예외 종류 이름) / (BUG_PROBLEM, 예외 종류 이름). 값과 경로는 담지 않고 종류 이름만 담는다.
+    어느 문제든 합계는 None, 줄 수는 0 이라서 일일 상한은 막지 않는다 ("확인하지 못함" 정책). 세션 한도는 화면이 따로 지킨다.
+    UnicodeError 는 ValueError 의 하위 종류지만 파일 내용 문제라서 환경 쪽으로 먼저 거른다.
+    """
+    try:
+        result = daily_calls(log_dir)
+        if not (isinstance(result, tuple) and len(result) == 2):
+            raise TypeError("daily_calls 반환 형태 불일치")
+        used, skipped = result
+        if not ((used is None or (isinstance(used, int) and not isinstance(used, bool)))
+                and isinstance(skipped, int) and not isinstance(skipped, bool)):
+            raise TypeError("daily_calls 반환 값 형식 불일치")
+        return used, skipped, None
+    except (OSError, UnicodeError) as e:
+        return None, 0, (ENV_PROBLEM, type(e).__name__)
+    except Exception as e:
+        return None, 0, (BUG_PROBLEM, type(e).__name__)
+
+
 # 깨진 줄이 이만큼 이상이면 하한값을 믿지 못한다고 보고 막는다 (환경변수로 바꾸지 않는 고정값)
 MAX_BROKEN_LINES = 5
 BROKEN_LOG_MESSAGE = "로그가 많이 깨져 사용량을 확인할 수 없습니다. logs/ 를 점검하세요."

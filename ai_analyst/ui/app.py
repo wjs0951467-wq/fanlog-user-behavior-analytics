@@ -48,7 +48,8 @@ last = st.session_state.result
 # (a) 세션 누적. (b) 하루: logs/ 의 오늘 호출 합계(모든 세션).
 session_blocked = view.calls_blocked(total, agent.MAX_LLM_CALLS)
 daily_limit = view.daily_limit()
-daily_used, daily_skipped = view.daily_calls(agent.LOG_DIR)  # 읽지 못하면 None, 깨진 줄이 있으면 하한값
+# 읽지 못하면 None, 깨진 줄이 있으면 하한값. 예기치 못한 예외도 여기서 받아서 화면 전체가 터지지 않게 한다 (세션 한도는 그대로 적용된다).
+daily_used, daily_skipped, daily_problem = view.read_daily_calls(agent.LOG_DIR)
 daily_blocked = view.daily_blocked(daily_used, agent.MAX_LLM_CALLS, daily_limit, daily_skipped)
 blocked = session_blocked or daily_blocked
 
@@ -70,7 +71,9 @@ elif daily_blocked:
              f"한도는 환경변수 {view.DAILY_LIMIT_ENV} 로 조정합니다.")
 if daily_skipped:
     st.warning(f"로그에서 깨진 줄 {daily_skipped}개를 무시한 하한값이라 실제 사용량은 더 많을 수 있음 (일일 합계는 {daily_used}회 이상).")
-if daily_used is None:
+if daily_problem and daily_problem[0] == view.BUG_PROBLEM:
+    st.error(f"내부 오류: 일일 합계 계산 코드를 점검해야 합니다 ({daily_problem[1]}). 이 경우 일일 상한은 적용되지 않고 세션 한도만 적용합니다.")
+elif daily_used is None:
     st.warning("일일 한도를 확인하지 못함: logs/ 의 오늘 기록을 읽지 못했습니다. 이 경우 입력을 막지 않고 세션 한도만 적용합니다.")
 
 # ---------- 질문 입력 ----------
