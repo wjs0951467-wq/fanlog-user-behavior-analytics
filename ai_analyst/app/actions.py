@@ -22,13 +22,21 @@ MAX_TEXT = 400  # 한 항목의 글자 수 상한
 
 # 효과를 약속하는 말. 전체 글에서 금지한다.
 BANNED_WORDS = ["보장", "무조건", "반드시", "확실히", "틀림없이"]
-# 팬에게 보내는 초안에만 금지하는 말: 받는 사람에게 "당신은 이탈 위험군"이라고 알리는 꼴이 된다.
-MESSAGE_BANNED_WORDS = ["이탈", "위험"]
+# 팬에게 보내는 초안(message_draft)에만 금지하는 말: 내부 분류(이탈 위험군, 휴면)를 팬에게 드러내지 않기 위해서다.
+# 가설과 주의사항은 운영자가 읽는 글이라 이 낱말을 써도 된다.
+MESSAGE_BANNED_WORDS = ["이탈", "위험", "휴면"]
 # 개인 식별 정보로 보이는 모양. 입력에 user_id 가 아예 없지만(구조적 방어), 출력도 한 번 더 본다.
+#
+# 경계를 \b 로 쓰지 않는 이유: 파이썬의 \b 는 한글도 "단어 문자"로 본다. 그래서 "user_123님",
+# "010-1234-5678로" 처럼 조사가 바로 붙으면 경계가 없다고 판단해 놓친다. 영문·숫자·밑줄만 경계로 삼으면
+# 한글이 붙어 있어도 잡히고, "abc123user_9" 같은 긴 영문 덩어리의 일부는 따로 건드리지 않는다.
+_BEFORE = r"(?<![A-Za-z0-9_])"
+_AFTER = r"(?![A-Za-z0-9_])"
 PII_PATTERNS = {
-    "이메일": re.compile(r"[\w.+-]+@[\w-]+\.[\w.]+"),
-    "전화번호": re.compile(r"\b0\d{1,2}[-\s.]?\d{3,4}[-\s.]?\d{4}\b"),
-    "사용자 ID": re.compile(r"\b(?:user|fan)[_-]?\d{2,}\b", re.IGNORECASE),
+    # 이메일은 ASCII 문자만으로 읽는다 (\w 는 한글을 포함해서 "abc@example.com으로" 의 "으로"까지 삼킨다)
+    "이메일": re.compile(r"[A-Za-z0-9._%+-]+@[A-Za-z0-9-]+(?:\.[A-Za-z0-9-]+)+"),
+    "전화번호": re.compile(_BEFORE + r"0\d{1,2}[-\s.]?\d{3,4}[-\s.]?\d{4}" + _AFTER),
+    "사용자 ID": re.compile(_BEFORE + r"(?:user|fan)[_-]?\d{2,}" + _AFTER, re.IGNORECASE),
 }
 
 ACTION_RULES = """You draft a CRM action idea for a FANLOG operations manager. FANLOG is a K-entertainment fan platform.
@@ -48,8 +56,10 @@ Rules:
 - Do not write any number that is not in the facts. Do not estimate effect sizes or sample sizes; code adds those.
 - Never promise an effect. Do not use: 보장, 무조건, 반드시, 확실히, 틀림없이.
 - Never state a cause ("~때문에 이탈한다"). The data is synthetic and shows correlation only.
-- message_draft is read by fans. It must NOT contain the words 이탈 or 위험, and must not tell fans they were
+- message_draft is read by fans. It must NOT contain the words 이탈, 위험, or 휴면, and must not tell fans they were
   selected by a score. No names, IDs, emails, or phone numbers. Do not use placeholders for personal data.
+- message_draft must not mention the fan's own activity or absence (for example "요즘 안 오셨네요", "오랜만이에요").
+  Write something that would read naturally to any fan of the platform. (Code cannot check this rule; only this prompt enforces it.)
 - If the segment uses the communication-gap axis, remember it only reflects which artists the fan follows.
 """
 

@@ -7,6 +7,10 @@ FANLOG DB(PostgreSQL)에 자연어로 질문하면 SQL을 생성·검증·실행
 ## 현재 상태
 - 완료: 읽기 전용 DB 계정(fanlog_ro), SQL 가드레일(app/sql_guard.py, pytest 23개),
   DB 프로파일링(scripts/profile_db.py, 뷰 포함), 시맨틱 레이어 v3, Text-to-SQL 1회 호출(app/text2sql.py).
+- 완료: Day 3 이탈 위험 점수와 세그먼트(app/churn.py).
+- 완료: Day 4 B단계 (A: 에이전트 루프, 호출 예산, 로그 / B: 도구 3개 ask_data, get_churn_segments, recommend_actions,
+  app/actions.py, 숫자 점검 app/numcheck.py, ask() 오류 문장 정리). pytest 290개 통과 (DB 와 LLM 은 mock).
+  아직 없는 것: Day 4 의 화면(Streamlit). 실제 OpenAI 로 에이전트를 돌려 본 적은 없다 (mock 테스트로만 검증).
 - LLM은 OpenAI API를 쓴다 (환경변수 OPENAI_API_KEY, FANLOG_MODEL). 모델명을 코드에 박지 않는다.
 - 사람이 직접 검증한 정답은 eval_notes.md 에 있다. 새 기능은 이 정답을 깨뜨리면 안 된다.
 

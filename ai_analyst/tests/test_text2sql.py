@@ -9,7 +9,7 @@ import json
 import pytest
 
 from app import text2sql
-from app.text2sql import NO_ASSUMPTION_NOTE, NO_DATA_SUMMARY, ask
+from app.text2sql import DB_CONNECTION_ERROR, NO_ASSUMPTION_NOTE, NO_DATA_SUMMARY, ask
 
 PROFILE = {
     "dim_user": {"kind": "table", "row_count": 10,
@@ -239,6 +239,37 @@ def test_db_error_without_sqlstate_stops_immediately(llm, db):
     assert out["error"].startswith("[DB 오류]") and len(llm.calls) == 1
 
 
+@pytest.mark.parametrize("exc", [
+    FakeDBError('connection to server at "db.internal" (10.0.0.5), port 5432 failed for user "fanlog_ro"', "08006"),
+    FakeDBError('password authentication failed for user "fanlog_ro"', "28P01"),
+    RuntimeError('SQLSTATE 없음: host=db.internal user=fanlog_ro'),
+])
+def test_connection_error_text_is_fixed_and_leaks_nothing(llm, db, exc):
+    # 접속/인증 오류의 원문(호스트, 계정 이름)은 error 에도 attempts 에도 싣지 않고 고정 문구만 남긴다
+    llm.replies = [answer()]
+    db.results = [exc]
+
+    out = ask("가입자 수는?")
+
+    assert out["error"] == DB_CONNECTION_ERROR
+    assert out["attempts"][0]["error_type"] == "db" and out["attempts"][0]["error_message"] == DB_CONNECTION_ERROR
+    dumped = json.dumps(out, ensure_ascii=False)
+    assert "db.internal" not in dumped and "fanlog_ro" not in dumped and "10.0.0.5" not in dumped
+    assert len(llm.calls) == 1  # 모델에게도 보내지 않는다
+
+
+def test_retryable_db_error_text_still_goes_to_the_model_and_attempts(llm, db):
+    # 반대쪽: SQL 이 틀려서 난 오류(42xxx)는 모델이 고치려면 원문이 필요하므로 그대로 둔다
+    llm.replies = [answer("SELECT x FROM dim_user"), answer()]
+    db.results = [FakeDBError('column "x" does not exist', "42703"), (["n"], [[1]])]
+
+    out = ask("가입자 수는?", summarize_result=False)
+
+    assert out["error"] is None
+    assert 'column "x" does not exist' in out["attempts"][0]["error_message"]
+    assert 'column "x" does not exist' in llm.calls[1]["messages"][-1]["content"]
+
+
 def test_timeout_is_retried(llm, db):
     llm.replies = [answer(), answer(), "요약"]
     db.results = [FakeDBError("canceling statement due to statement timeout", "57014"), (["n"], [[10]])]
@@ -319,6 +350,20 @@ def test_llm_api_error_is_not_retried(llm, db):
 
     assert out["error"].startswith("[LLM 오류]")
     assert out["usage"]["llm_calls"] == 1 and out["attempts"] == []
+
+
+@pytest.mark.parametrize("exc, expected", [
+    (RuntimeError("Incorrect API key provided: sk-abc***xyz"), "[LLM 오류] RuntimeError"),
+    (KeyError("secret-detail"), "[LLM 오류] KeyError"),
+])
+def test_llm_error_shows_only_the_exception_type_name(llm, db, exc, expected):
+    # OpenAI 인증 오류 메시지에는 API 키 일부가 들어 있을 수 있어, 메시지 대신 종류 이름만 알린다
+    llm.replies = [exc]
+
+    out = ask("가입자 수는?")
+
+    assert out["error"] == expected
+    assert "sk-" not in json.dumps(out, ensure_ascii=False) and "secret-detail" not in json.dumps(out, ensure_ascii=False)
 
 
 def test_real_system_rules_mention_json():

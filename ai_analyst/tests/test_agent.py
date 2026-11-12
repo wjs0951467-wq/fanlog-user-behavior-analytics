@@ -267,7 +267,9 @@ def test_ask_data_trims_what_the_model_sees(monkeypatch):
     ("[LLM 오류] AuthenticationError", "error"),
 ])
 def test_ask_data_error_status(monkeypatch, error, status):
-    # 에러 문장을 안전하게 만드는 일은 ask() 가 한다 (tests/test_text2sql.py). 도구는 그대로 전달하고 상태만 정한다.
+    # 에러 문장을 안전하게 만드는 일은 ask() 가 한다. 그 검증은 tests/test_text2sql.py 의
+    # test_connection_error_text_is_fixed_and_leaks_nothing, test_llm_error_shows_only_the_exception_type_name 에 있다.
+    # 도구는 그 문장을 그대로 전달하고 상태만 정한다.
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
         sql=None, rows=[], row_count=0, error=error))
     out = tools.run_ask_data({"question": "질문"})
@@ -288,6 +290,61 @@ def test_ask_data_budget_settings():
     t = tools.TOOLS["ask_data"]
     assert t["llm_cost"] == 3 and t["max_per_question"] == 2
     assert t["spec"]["function"]["parameters"]["required"] == ["question", "reason"]
+
+
+def test_system_prompt_action_request_paragraph():
+    p = agent.SYSTEM_PROMPT
+    section = p.split("Action requests", 1)[1].split("Wording rules", 1)[0]
+    assert "recommend_actions" in section and "definition (B)" in section
+    assert "no memory" in section and "이 세그먼트" in section      # 대화 기억이 없어 세그먼트를 되묻게 한다
+    assert "sample-size verdict" in section and "Do not soften or drop" in section  # 표본 수 판정과 주의 문구를 빼지 않게
+    assert "해석 보류" in section and "fewer than 20" in section and "alternatives" in section
+
+
+def test_system_prompt_separates_the_two_churn_risk_meanings():
+    p = agent.SYSTEM_PROMPT
+    a, b = p.split("(A)", 1)[1].split("(B)", 1)
+    assert "at_risk" in a and "ask_data" in a                       # "이탈 위험 팬" = at_risk 상태 -> ask_data
+    assert "상위 10%군" in b and "get_churn_segments" in b           # "이탈 위험 순위 상위군" -> 세그먼트 도구
+    assert "with no mention of 순위/점수/군/세그먼트, use (A)" in p   # 그냥 "이탈 위험 팬"이면 (A)
+    assert "이탈할 팬" in p                                           # "이탈할 팬"이라고 쓰지 말라는 규칙
+
+
+def test_tool_registry_has_the_three_designed_tools():
+    assert set(tools.TOOLS) == {"ask_data", "get_churn_segments", "recommend_actions"}
+    for name, t in tools.TOOLS.items():
+        fn = t["spec"]["function"]
+        assert fn["name"] == name and callable(t["run"])
+        assert fn["parameters"]["additionalProperties"] is False        # 정해지지 않은 인자는 모델이 보낼 수 없다
+        assert "reason" in fn["parameters"]["required"]                 # "왜 불렀는가"는 항상 받는다
+
+
+def test_tool_budget_settings():
+    t = tools.TOOLS
+    assert (t["ask_data"]["llm_cost"], t["ask_data"]["max_per_question"]) == (3, 2)
+    assert (t["get_churn_segments"]["llm_cost"], t["get_churn_segments"]["max_per_question"]) == (0, 3)  # LLM 을 쓰지 않는다
+    assert (t["recommend_actions"]["llm_cost"], t["recommend_actions"]["max_per_question"]) == (2, 1)    # 초안 1 + 형식 재시도 1
+    for name, tool in t.items():
+        # 도구가 최대로 쓰고도 최종 답을 쓸 1회가 남아야 실행되므로, 예산 안에 들어가야 한다
+        assert tool["llm_cost"] + 1 < MAX_LLM_CALLS, name
+    assert t["ask_data"]["llm_cost"] == tools.MAX_SQL_CALLS  # 요약을 껐으므로 SQL 생성 횟수가 최대치
+
+
+def test_segment_tools_only_accept_listed_values_in_their_specs():
+    for name in ("get_churn_segments", "recommend_actions"):
+        props = tools.TOOLS[name]["spec"]["function"]["parameters"]["properties"]
+        assert props["tier"]["enum"] == tools.SEGMENT_ARGS["tier"]
+        assert props["purchase"]["enum"] == tools.SEGMENT_ARGS["purchase"]
+        assert props["gap_group"]["enum"] == tools.SEGMENT_ARGS["gap_group"]
+        assert tools.TOOLS[name]["spec"]["function"]["parameters"]["required"] == ["reason"]  # 인자를 생략하면 "전체"
+
+
+def test_tool_descriptions_keep_the_two_meanings_apart():
+    ask = tools.TOOLS["ask_data"]["spec"]["function"]["description"]
+    seg = tools.TOOLS["get_churn_segments"]["spec"]["function"]["description"]
+    assert "at_risk" in ask                                        # at_risk 상태 팬 수는 ask_data 로
+    assert "at_risk" in seg and "쓰지 않는다" in seg                 # ... 세그먼트 도구로 묻지 않게
+    assert "실제 발송은 하지 않는다" in tools.TOOLS["recommend_actions"]["spec"]["function"]["description"]
 
 
 def test_answer_numbers_are_checked_against_tool_results(monkeypatch):
