@@ -260,19 +260,18 @@ def test_ask_data_trims_what_the_model_sees(monkeypatch):
     assert len(out["for_ui"]["rows"]) == 50  # 화면은 전체 표를 그린다
 
 
-@pytest.mark.parametrize("error, status, shown", [
-    ("CANNOT_ANSWER: 나이 정보가 없습니다", "refusal", "CANNOT_ANSWER: 나이 정보가 없습니다"),
-    ("[가드레일 차단] 3회 시도 후 실패: 허용되지 않은 테이블: x", "error", "[가드레일 차단] 3회 시도 후 실패: 허용되지 않은 테이블: x"),
-    ('[DB 오류] connection to server at "db.internal" failed for user "fanlog_ro"', "error",
-     "[DB 오류] 데이터베이스 접속 문제로 실행하지 못했습니다."),
-    ("[LLM 오류] Incorrect API key provided: sk-abc***xyz", "error", "[LLM 오류] LLM 호출에 실패했습니다."),
+@pytest.mark.parametrize("error, status", [
+    ("CANNOT_ANSWER: 나이 정보가 없습니다", "refusal"),
+    ("[가드레일 차단] 3회 시도 후 실패: 허용되지 않은 테이블: x", "error"),
+    ("[DB 오류] 데이터베이스 접속 문제로 실행하지 못했습니다.", "error"),
+    ("[LLM 오류] AuthenticationError", "error"),
 ])
-def test_ask_data_error_status_and_sanitizing(monkeypatch, error, status, shown):
+def test_ask_data_error_status(monkeypatch, error, status):
+    # 에러 문장을 안전하게 만드는 일은 ask() 가 한다 (tests/test_text2sql.py). 도구는 그대로 전달하고 상태만 정한다.
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
         sql=None, rows=[], row_count=0, error=error))
     out = tools.run_ask_data({"question": "질문"})
-    assert out["status"] == status
-    assert out["for_llm"]["error"] == shown and out["for_ui"]["error"] == shown  # 화면에도 접속 정보/키를 내보내지 않는다
+    assert out["status"] == status and out["for_llm"]["error"] == error
 
 
 def test_ask_data_through_the_agent(monkeypatch):
@@ -289,6 +288,18 @@ def test_ask_data_budget_settings():
     t = tools.TOOLS["ask_data"]
     assert t["llm_cost"] == 3 and t["max_per_question"] == 2
     assert t["spec"]["function"]["parameters"]["required"] == ["question", "reason"]
+
+
+def test_answer_numbers_are_checked_against_tool_results(monkeypatch):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(rows=[[1643]]))
+    use_llm(monkeypatch, says("", call("ask_data", question="활동 중인 팬 수")),
+            says("활동 중인 팬은 1,643명이고, 지난달보다 120명 늘었습니다."))
+
+    out = run_agent("현재 활동 중인 팬은 몇 명이야?")
+
+    assert out["unverified_numbers"] == ["120"]  # 1,643 은 도구 결과에 있고, 120 은 어디에도 없다
+    assert out["answer"].endswith("120명 늘었습니다.")  # 경고만 한다. 답을 고치거나 다시 묻지 않는다
+    assert out["usage"]["by_source"]["agent"]["llm_calls"] == 2
 
 
 # ---------- 로그 ----------
@@ -343,7 +354,7 @@ def test_complete_with_tools_parses_tool_calls(monkeypatch):
     client = FakeOpenAI(message)
     monkeypatch.setattr(llm, "_client", lambda: client)
     monkeypatch.setenv("FANLOG_MODEL", "test-model")
-    specs = [tools.ASK_DATA["spec"]]
+    specs = [tools.TOOLS["ask_data"]["spec"]]
 
     out = llm.complete_with_tools("sys", [{"role": "user", "content": "hi"}], specs)
 
@@ -360,7 +371,7 @@ def test_complete_with_tools_can_forbid_tools(monkeypatch):
     monkeypatch.setattr(llm, "_client", lambda: client)
     monkeypatch.setenv("FANLOG_MODEL", "test-model")
 
-    out = llm.complete_with_tools("sys", [], [tools.ASK_DATA["spec"]], allow_tools=False)
+    out = llm.complete_with_tools("sys", [], [tools.TOOLS["ask_data"]["spec"]], allow_tools=False)
 
     assert client.sent[0]["tool_choice"] == "none"
     assert out["text"] == "최종 답" and out["tool_calls"] == []

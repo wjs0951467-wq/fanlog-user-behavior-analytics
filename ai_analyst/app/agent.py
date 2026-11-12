@@ -14,7 +14,9 @@ import time
 from datetime import datetime
 from pathlib import Path
 
+from . import numcheck
 from .llm import assistant_message, complete_with_tools, tool_message
+from .text2sql import llm_error_text
 from .tools import TOOLS, error_result
 
 MAX_STEPS = 5        # 에이전트가 LLM 을 부르는 횟수의 상한 (마지막 단계는 도구 없이 답만 받는다)
@@ -39,6 +41,12 @@ Two different meanings of "이탈 위험" (churn risk). Never mix them, and alwa
 - (B) "이탈 위험 순위가 높은 팬" = currently ACTIVE fans ranked by a churn score: 상위 10%군 / 11~30%군 / 나머지.
   Use get_churn_segments for this. Example: "이탈 위험 순위가 높은 팬(상위 10%군) 중 구매 경험이 있는 팬은 몇 명?"
 - If the user just says "이탈 위험 팬" with no mention of 순위/점수/군/세그먼트, use (A).
+
+Action requests (message drafts, what to do for a segment):
+- Use recommend_actions with the segment the user named (tier / purchase / gap_group). It works on definition (B) segments.
+- You have no memory of earlier questions. If the user says "이 세그먼트" without naming it, ask them to name the segment.
+- Report the draft together with the tool's sample-size verdict and notes. Do not soften or drop those notes.
+- A result with status "해석 보류" means the segment has fewer than 20 fans: say so and offer the listed alternatives.
 
 Wording rules:
 - All results come from synthetic data and reflect assumed data-generation rules. Never state causes ("~때문에").
@@ -135,6 +143,7 @@ def run_agent(question: str, tools: dict | None = None, log: bool = True) -> dic
         specs = [t["spec"] for t in tools.values()]
         messages = [{"role": "user", "content": question.strip()}]
         state = {"seen": {}, "counts": {}}  # 중복 호출 감지와 도구별 호출 횟수
+        shown_to_model = [question]         # 숫자 점검의 근거: 질문과, 모델에게 보여준 도구 결과들
 
         for step in range(1, MAX_STEPS + 1):
             # 마지막 단계이거나 예산이 1회만 남았으면 도구를 막고 최종 답만 받는다
@@ -143,14 +152,15 @@ def run_agent(question: str, tools: dict | None = None, log: bool = True) -> dic
             try:
                 reply = complete_with_tools(SYSTEM_PROMPT, messages, specs, allow_tools=not final_only)
             except Exception as e:
-                # API 오류 메시지에는 키 일부가 섞일 수 있어 종류만 남긴다
-                result["error"] = f"[LLM 오류] {type(e).__name__}"
+                result["error"] = llm_error_text(e)  # API 오류 메시지에는 키 일부가 섞일 수 있어 종류만 남긴다
                 break
             _add_usage(usage, "agent", 0, reply["tokens"])
 
             if final_only or not reply["tool_calls"]:
                 result["answer"] = reply["text"].strip() or None
                 result["forced_final"] = final_only
+                # 경고 전용: 답에 나온 숫자 중 질문과 도구 결과 어디에도 없는 것을 표시한다 (고치거나 재시도하지 않는다)
+                result["unverified_numbers"] = numcheck.unverified_numbers(result["answer"] or "", shown_to_model)
                 break
 
             messages.append(assistant_message(reply))
@@ -159,6 +169,7 @@ def run_agent(question: str, tools: dict | None = None, log: bool = True) -> dic
                 record["step"] = step
                 result["steps"].append(record)
                 messages.append(tool_message(call["id"], content))
+                shown_to_model.append(content)
 
         if result["answer"] is None and result["error"] is None:
             result["error"] = "최종 답변을 만들지 못했습니다."

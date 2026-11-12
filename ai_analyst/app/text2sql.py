@@ -196,6 +196,19 @@ def db_error_text(e: Exception) -> str:
     return str(getattr(e, "orig", None) or e).strip()[:ERROR_TEXT_LIMIT]
 
 
+# ---------- 밖으로 내보내는 에러 문장 ----------
+# 응답(/ask, CLI, 에이전트, 화면, 로그)에 에러 원문을 그대로 싣지 않는다.
+# - OpenAI 의 인증 오류 메시지에는 API 키 일부가 들어 있을 수 있다.
+# - DB 접속/인증 오류 메시지에는 호스트나 계정 이름이 들어 있을 수 있다.
+# 이 두 가지는 여기 한 곳에서만 만들고, agent.py 와 tools.py 도 이것을 가져다 쓴다.
+DB_CONNECTION_ERROR = "[DB 오류] 데이터베이스 접속 문제로 실행하지 못했습니다."
+
+
+def llm_error_text(e: Exception) -> str:
+    """LLM 호출 실패는 예외의 종류 이름만 알린다 (예: AuthenticationError, RateLimitError)."""
+    return f"[LLM 오류] {type(e).__name__}"
+
+
 def build_retry_message(error_type: str, sql: str | None, error_text: str) -> str:
     """재시도 때 대화에 덧붙이는 user 메시지: 이전 SQL + 에러 원문 + 같은 실수 반복 금지."""
     return (f"Your previous answer failed ({error_type}).\n"
@@ -250,7 +263,7 @@ def ask(question: str, summarize_result: bool = True) -> dict:
         try:
             reply = _call_llm(result, system, messages, json_mode=True)
         except Exception as e:  # API 오류(인증, 한도 등)는 SQL 문제가 아니므로 재시도하지 않는다
-            result["error"] = f"[LLM 오류] {str(e).splitlines()[0] if str(e) else type(e).__name__}"
+            result["error"] = llm_error_text(e)
             return result
 
         parsed = parse_llm_output(reply)
@@ -285,11 +298,12 @@ def ask(question: str, summarize_result: bool = True) -> dict:
                     columns, rows = run_query(safe_sql)
                 except Exception as e:
                     label = "DB 오류"
-                    attempt.update(error_type="db", error_message=db_error_text(e))
                     if not is_retryable_db_error(e):
-                        # 접속/인증 오류 등: 에러 원문을 모델에게 보내지 않고 즉시 중단한다
-                        result["error"] = f"[DB 오류] {attempt['error_message'].splitlines()[0]}"
+                        # 접속/인증 오류 등: 에러 원문을 모델에게도, 응답(error, attempts)에도 싣지 않고 즉시 중단한다
+                        attempt.update(error_type="db", error_message=DB_CONNECTION_ERROR)
+                        result["error"] = DB_CONNECTION_ERROR
                         return result
+                    attempt.update(error_type="db", error_message=db_error_text(e))
                 else:
                     # 성공. 0행도 성공이다: 재시도하면 모델이 조건을 억지로 바꿔 "틀린 답"을 만들 수 있다.
                     result.update(sql=safe_sql, columns=columns, rows=rows, row_count=len(rows),
