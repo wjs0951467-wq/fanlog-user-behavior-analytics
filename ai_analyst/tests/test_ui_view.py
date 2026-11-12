@@ -194,3 +194,44 @@ def test_aliased_user_ids_are_masked_by_value_in_the_table():
 def test_result_table_masks_ids_inside_longer_text_cells():
     df, _ = view.result_table(["memo"], [["user_000123 님이 구매"]])
     assert df["memo"].tolist() == ["[ID] 님이 구매"]
+
+
+# =====================================================================
+# [ID] 만 가득한 열은 화면에서 뺀다
+# =====================================================================
+def test_drop_id_only_columns_removes_a_column_that_is_all_ids():
+    df, _ = view.result_table(["id", "n"], [["user_000123", 3], ["user_000456", 4]])
+    kept, dropped, count = view.drop_id_only_columns(df)
+    assert list(kept.columns) == ["n"] and kept["n"].tolist() == [3, 4]
+    assert dropped == ["id"] and count == 2
+
+
+def test_drop_id_only_columns_keeps_a_column_that_is_only_partly_ids():
+    df, _ = view.result_table(["id", "n"], [["user_000123", 3], ["txn_000001", 4]])
+    kept, dropped, count = view.drop_id_only_columns(df)
+    assert list(kept.columns) == ["id", "n"] and kept["id"].tolist() == ["[ID]", "txn_000001"]
+    assert dropped == [] and count == 0
+
+
+def test_drop_id_only_columns_does_nothing_without_ids():
+    df, _ = view.result_table(["a", "b"], [["x", 1], ["y", 2]])
+    kept, dropped, count = view.drop_id_only_columns(df)
+    assert kept.equals(df) and dropped == [] and count == 0
+
+
+def test_text_containing_an_id_is_not_an_id_only_column():
+    df, _ = view.result_table(["memo"], [["user_000123 님"], ["user_000456 님"]])
+    kept, dropped, _ = view.drop_id_only_columns(df)
+    assert list(kept.columns) == ["memo"] and dropped == []  # 문장 속 ID 는 "값이 [ID] 인 열" 이 아니다
+
+
+def test_an_empty_table_is_not_treated_as_an_id_only_table():
+    df, _ = view.result_table(["id"], [])
+    kept, dropped, count = view.drop_id_only_columns(df)
+    assert list(kept.columns) == ["id"] and dropped == [] and count == 0
+
+
+def test_two_id_only_columns_are_both_dropped_and_counted():
+    df, _ = view.result_table(["a", "b", "n"], [["user_000001", "user_000002", 1], ["user_000003", "user_000004", 2]])
+    kept, dropped, count = view.drop_id_only_columns(df)
+    assert list(kept.columns) == ["n"] and dropped == ["a", "b"] and count == 4

@@ -468,12 +468,12 @@ def test_normal_result_has_no_truncation_warning(monkeypatch):
 def test_aliased_user_ids_never_reach_the_screen_even_if_ask_did_not_mask_them(monkeypatch):
     """ask() 안의 가리기를 건너뛰는 상황(가짜 ask)을 일부러 만들어서, 화면 쪽 두 번째 방어선만 따로 시험한다."""
     monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(
-        columns=["id", "n"], rows=[["user_000123", 3], ["user_000456", 4]], row_count=2))
+        columns=["id", "n"], rows=[["user_000123", 3], ["txn_000001", 4]], row_count=2))
     script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
     at = submit(new_app())
     page = everything(at)
-    assert "user_000123" not in page and "user_000456" not in page
-    assert at.dataframe[0].value["id"].tolist() == ["[ID]", "[ID]"]
+    assert "user_000123" not in page
+    assert at.dataframe[0].value["id"].tolist() == ["[ID]", "txn_000001"]  # 전부 [ID] 인 열은 이제 숨겨지므로 일부만 ID 인 열로 확인한다
 
 
 def test_user_id_in_the_agent_answer_is_masked_on_screen(monkeypatch):
@@ -510,3 +510,57 @@ def test_no_row_cap_note_for_a_normal_result(monkeypatch):
     script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
     at = submit(new_app())
     assert not any("정확히 1000행" in i.value for i in at.info)
+
+
+# =====================================================================
+# [ID] 만 가득한 열 숨기기
+# =====================================================================
+def _plain(items):
+    return [i.value.replace(chr(92), "") for i in items]
+
+
+def _show(monkeypatch, **over):
+    monkeypatch.setattr(tools, "ask", lambda q, summarize_result=True: ask_result(**over))
+    script_agent(monkeypatch, says("", call("ask_data", question="q")), says("끝"))
+    return submit(new_app())
+
+
+def test_all_id_column_is_hidden_with_one_line_under_the_table(monkeypatch):
+    at = _show(monkeypatch, columns=["id", "n"], rows=[["user_000123", 3], ["user_000456", 4]], row_count=2, masked_ids=2)
+    assert list(at.dataframe[0].value.columns) == ["n"]
+    assert any("개별 사용자 ID 는 표시하지 않았다 (가린 값 2개)" in c for c in _plain(at.caption))
+    assert not any("로 가렸습니다" in c for c in _plain(at.caption))  # 같은 값을 위 캡션에서 또 세지 않는다
+
+
+def test_partly_id_column_stays_and_gets_the_caption_above(monkeypatch):
+    at = _show(monkeypatch, columns=["id", "n"], rows=[["user_000123", 3], ["txn_000001", 4]], row_count=2, masked_ids=1)
+    assert list(at.dataframe[0].value.columns) == ["id", "n"]
+    captions = _plain(at.caption)
+    assert any("1개" in c and "[ID]" in c and "가렸습니다" in c for c in captions)
+    assert not any("표시하지 않았다" in c for c in captions)
+
+
+def test_no_id_at_all_shows_neither_line(monkeypatch):
+    at = _show(monkeypatch, columns=["n"], rows=[[1], [2]], row_count=2, masked_ids=0)
+    captions = _plain(at.caption)
+    assert not any("표시하지 않았다" in c or "가렸습니다" in c for c in captions)
+
+
+def test_hidden_and_remaining_counts_add_up_to_the_total(monkeypatch):
+    """열이 숨겨지고 일부만 [ID] 인 열도 남는 경우: 두 문구의 숫자를 더하면 가린 전체 개수다 (같은 값을 두 번 세지 않는다)."""
+    rows = [["user_000001", "user_000011", 1], ["user_000002", "txn_1", 2], ["user_000003", "txn_2", 3]]
+    at = _show(monkeypatch, columns=["a", "b", "n"], rows=rows, row_count=3, masked_ids=5)  # a 열 3개 + b 열 2개
+    assert list(at.dataframe[0].value.columns) == ["b", "n"]
+    captions = _plain(at.caption)
+    import re
+    below = [int(m.group(1)) for c in captions for m in [re.search(r"표시하지 않았다 .가린 값 (\d+)개", c)] if m]
+    above = [int(m.group(1)) for c in captions for m in [re.search(r"ID.? 모양의 값 (\d+)개", c)] if m]
+    assert below == [3] and above == [2]
+    assert below[0] + above[0] == 5
+
+
+def test_when_every_column_is_ids_no_empty_table_is_drawn(monkeypatch):
+    at = _show(monkeypatch, columns=["id"], rows=[["user_000123"], ["user_000456"]], row_count=2, masked_ids=2)
+    assert all(df.value.shape[1] > 0 for df in at.dataframe)  # 열이 하나도 없는 빈 표를 그리지 않는다 (시도 이력 표 등은 따로 있다)
+    assert not any("id" in df.value.columns for df in at.dataframe)
+    assert any("표시할 표가 없습니다" in c and "2개" in c for c in _plain(list(at.caption) + list(at.info)))

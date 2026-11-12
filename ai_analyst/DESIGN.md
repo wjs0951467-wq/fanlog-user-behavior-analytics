@@ -325,3 +325,8 @@ Day 3 이탈 위험 점수의 한계 (모든 수치는 가정한 생성 규칙�
 - (l) 가상 데이터의 90일 기간이라 계절성과 장기 효과는 알 수 없다.
 - 탈퇴자 29명을 전부 제외했다. 탈퇴 시각이 기준일 이후인 사용자까지 제외하므로 약한 미래 정보 사용이다(전체의 약 1.7%).
   탈퇴 시각이 분석 기간 뒤(최대 2028년)인 데이터가 16명 있다.
+
+### 보안 검증 기록
+
+- 읽기 전용 계정(fanlog_ro)의 권한은 담당자가 DBeaver 로 직접 확인했다: 슈퍼유저/생성 권한/복제 권한 없음, default_transaction_read_only=on 과 statement_timeout=5s 설정됨, 15개 허용 테이블은 SELECT 만 가능하고 meta_generation_run 은 SELECT 도 불가, 모든 테이블에서 INSERT/UPDATE/DELETE 불가. (Claude Code 는 DB 권한을 직접 조회하지 않았다.) 확인일: 2026-11-12
+- git 이력 전체(76개 커밋)에서 API 키 모양(sk-, OPENAI_API_KEY=, ANTHROPIC_API_KEY= 뒤 20자 이상)을 파일 이름만 출력하는 방식으로 검색했고 0건이었다. .env 는 커밋된 적이 없다. 확인일: 2026-11-12

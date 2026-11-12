@@ -56,9 +56,16 @@ def show_ask_data(step: dict) -> None:
             st.warning(md(f"결과가 상한에서 잘렸습니다. 표에는 앞의 {r['row_count']:,}행만 있습니다."))
         elif r.get("row_cap_note"):
             st.info(md(r["row_cap_note"]))
-        if r.get("masked_ids"):
-            st.caption(md(f"사용자 ID 모양의 값 {r['masked_ids']:,}개를 [ID] 로 가렸습니다."))
-        _frame(df)
+        df, id_columns, id_count = view.drop_id_only_columns(df)
+        remaining = max((r.get("masked_ids") or 0) - id_count, 0)  # 전체에서 숨긴 열의 값을 뺀다: 같은 값을 두 번 세지 않는다
+        if remaining:
+            st.caption(md(f"사용자 ID 모양의 값 {remaining:,}개를 [ID] 로 가렸습니다."))
+        if id_columns and df.shape[1] == 0:  # 모든 열이 ID 라서 그릴 것이 없다: 빈 표 대신 안내 한 줄
+            st.info(md(f"표시할 표가 없습니다: 모든 열이 개별 사용자 ID 입니다 (가린 값 {id_count:,}개)"))
+        else:
+            _frame(df)
+        if id_columns:
+            st.caption(md(f"개별 사용자 ID 는 표시하지 않았다 (가린 값 {id_count:,}개)"))
         if hidden:
             st.caption(md(f"개인 식별 컬럼({', '.join(hidden)})은 화면에서 숨겼습니다."))
     if r.get("sql"):

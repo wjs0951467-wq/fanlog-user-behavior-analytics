@@ -14,7 +14,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from app.safety import mask_ids
+from app.safety import ID_MASK, mask_ids
 
 SESSION_CALL_LIMIT = 30  # 세션 하나가 쓸 수 있는 LLM 호출 누적 한도 (공용 크레딧 보호)
 
@@ -137,6 +137,16 @@ def result_table(columns, rows) -> tuple[pd.DataFrame, list[str]]:
         labels.append(names[i] if seen[names[i]] == 1 else f"{names[i]}_{seen[names[i]]}")
     data = [[_cell(row[i]) for i in keep] for row in rows if len(row) == len(names)]
     return pd.DataFrame(data, columns=labels), hidden
+
+
+def drop_id_only_columns(df: pd.DataFrame) -> tuple:
+    """값이 전부 "[ID]" 인 열을 표에서 뺀다. (남은 표, 뺀 열 이름, 뺀 열의 [ID] 개수)를 돌려준다.
+
+    일부만 [ID] 인 열이나 문장 속에 [ID] 가 섞인 열은 남긴다 (나머지 값이 의미 있는 정보라서).
+    행이 없는 표는 "전부 [ID]" 로 보지 않는다 (all() 이 빈 열에서 참이 되는 것을 막는다).
+    """
+    dropped = [c for c in df.columns if len(df) > 0 and all(v == ID_MASK for v in df[c])]
+    return df.drop(columns=dropped), [str(c) for c in dropped], len(df) * len(dropped)
 
 
 def cells_frame(cells: list) -> pd.DataFrame:
