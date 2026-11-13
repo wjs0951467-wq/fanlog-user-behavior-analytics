@@ -1,0 +1,45 @@
+# FANLOG 평가 질문 파일.
+#
+# 지금은 스키마를 보여주는 예시 항목 2개만 있다 (둘 다 eval_notes.md 의 개발용 질문).
+# 나머지 개발용 4문항의 초안은 dev_drafts.yaml, 보류 후보 초안은 candidates.yaml 에 있다.
+#
+# 규칙
+# - verified 는 사람이 정한다. 정답 SQL 을 DBeaver 로 직접 실행해 확인한 문항만 true 로 바꾼다. 기본값은 false 다.
+# - verified: false 인 문항은 실제 실행 모드(run_eval 의 --confirm-calls)에서 거부된다.
+# - split: dev 는 시맨틱 레이어를 만들며 쓴 질문(eval_notes.md 의 6문항과 같아야 한다), heldout 은 모델에 한 번도 묻지 않은 질문.
+# - expected_kind: scalar(숫자 하나) / rows(행 집합) / refusal(거절이 정답, reference_sql 없음).
+# - tolerance: abs(절대 오차), rel(상대 오차), accept_percent_or_ratio(0.1642 와 16.42 를 같은 답으로 볼지).
+# - ordered: rows 문항에서 순서까지 맞아야 하면 true (질문이 "상위 N", "순서대로"를 요구할 때만).
+# - 아래 reference_sql 은 Claude Code 가 eval_notes.md 의 "확인 방법"을 보고 쓴 초안이다. DB 에서 실행해 보지 않았다.
+
+questions:
+  - id: DEV03
+    question: "구매 건수는?"
+    category: 지표 정의
+    split: dev
+    verified: false
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS purchase_count
+      FROM fact_order
+      WHERE status <> 'pending'
+    tolerance: {abs: 0}
+    notes: "eval_notes.md 의 정답은 879 (fact_order 에서 status <> 'pending'). 사람이 이 SQL 의 결과가 879 인지 확인해야 한다."
+    source: eval_notes.md
+
+  - id: DEV04
+    question: "현재 휴면 팬은 몇 명? (탈퇴자 제외)"
+    category: 지표 정의
+    split: dev
+    verified: false
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT m.user_id) AS dormant_fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
+        AND m.activity_status = 'dormant'
+        AND u.is_deleted IS NOT TRUE
+    tolerance: {abs: 0}
+    notes: "eval_notes.md 의 정답은 3 (마지막 날짜, dormant, 탈퇴자 제외). 사람이 이 SQL 의 결과가 3 인지 확인해야 한다."
+    source: eval_notes.md

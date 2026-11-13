@@ -1,0 +1,749 @@
+# FANLOG 평가 후보 질문 초안 (40문항)
+#
+# 이 초안은 정답이 아니다. 사람이 DBeaver 로 직접 확인해야 verified 가 된다.
+# 모델이 낸 SQL 이나 숫자로 정답을 만들지 않는다.
+#
+# - 작성: Claude Code 가 semantic/schema_profile.json 과 semantic_layer.yaml 만 보고 썼다. DB 에서 실행해 보지 않았다.
+#   그래서 정답 값은 어디에도 적지 않았다 (reference_note 는 "왜 이 SQL 인가"의 추론만 담는다).
+# - 이 질문들은 모델에 한 번도 물어보지 않았다. 보류(heldout) 질문으로 쓰려면 그 상태를 지켜야 한다.
+# - 확인 절차: eval/verify/reference_queries.sql 을 DBeaver 에서 한 문항씩 실행하고 eval/verify/VERIFY_CHECKLIST.md 에 결과를 적는다.
+#   확인이 끝난 문항만 questions.yaml 로 옮기고 verified: true 로 바꾼다.
+# - needs_definition: true 인 문항은 지표 정의가 확정되지 않았다. 정의를 사람이 정하기 전에는 보류 후보가 아니다 (heldout_candidate: false).
+# - guard_ok: reference_sql 이 app.sql_guard.validate_sql 을 통과하는가 (파싱 검사만, tests/test_eval_candidates.py 가 확인한다).
+# - 필드: id, question, category, expected_kind(scalar|rows|refusal), reference_sql, reference_note, trap, likely_wrong,
+#   tolerance, ordered, needs_definition, heldout_candidate, guard_ok, verified, source
+
+candidates:
+  # ============================== 단순 집계 (8) ==============================
+  - id: Q01
+    question: "지금까지 가입한 사용자는 모두 몇 명이야?"
+    category: 단순 집계
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS signup_users
+      FROM dim_user
+    reference_note: "가입자 수는 dim_user 기준으로 세고(conventions), '지금까지 가입한'은 누적이라 탈퇴자를 포함한다. dim_user 는 1행 = 1명이다."
+    trap: "가입 이벤트(fact_user_event 의 sign_up)로 세면 일부만 잡힌다. 누적 질문인데 탈퇴자를 빼는 실수."
+    likely_wrong: "fact_user_event WHERE event_name = 'sign_up' 을 세거나 is_deleted 조건을 붙인다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q02
+    question: "탈퇴 처리된 사용자는 몇 명이야?"
+    category: 단순 집계
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS deleted_users
+      FROM dim_user
+      WHERE is_deleted
+    reference_note: "탈퇴 여부는 dim_user.is_deleted(boolean) 하나로 정해진다. 조건 하나의 단순 개수다."
+    trap: 없음
+    likely_wrong: "deleted_at_utc IS NOT NULL 로 세거나(결과가 다를 수 있다), 탈퇴 시각이 분석 기간 안인 것만 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q03
+    question: "판매 등록된 상품은 총 몇 개야?"
+    category: 단순 집계
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS products
+      FROM dim_product
+    reference_note: "상품 마스터 dim_product 는 1행 = 상품 1개다."
+    trap: 없음
+    likely_wrong: "fact_order_item 의 DISTINCT product_id 를 세서 '팔린 적 있는 상품'만 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q04
+    question: "콘텐츠 유형별로 콘텐츠가 몇 개씩 있어?"
+    category: 단순 집계
+    expected_kind: rows
+    reference_sql: |-
+      SELECT content_type, COUNT(*) AS contents
+      FROM dim_content
+      GROUP BY content_type
+      ORDER BY contents DESC
+    reference_note: "콘텐츠 마스터 dim_content 를 content_type 으로 묶어 센다. 질문이 순서를 요구하지 않으므로 행 집합만 비교한다."
+    trap: 없음
+    likely_wrong: "mart_content_performance 를 쓰면 값은 같을 수 있지만, 조회수 합계 같은 다른 열을 덧붙여 열 수가 달라진다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q05
+    question: "환불이 발생한 주문은 몇 건이야? 부분 환불도 포함해서."
+    category: 단순 집계
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS refunded_orders
+      FROM fact_order
+      WHERE status IN ('refunded', 'partially_refunded')
+    reference_note: "semantic_layer 의 refund_amount_total 설명: 환불 주문은 status 가 refunded 또는 partially_refunded 인 주문이다."
+    trap: "부분 환불(partially_refunded)을 빼먹기 쉽다."
+    likely_wrong: "status = 'refunded' 만 세거나 fact_user_event 의 refund 이벤트를 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q06
+    question: "주로 쓰는 기기별 가입자 수를 알려줘."
+    category: 단순 집계
+    expected_kind: rows
+    reference_sql: |-
+      SELECT primary_device_type, COUNT(*) AS users
+      FROM dim_user
+      GROUP BY primary_device_type
+      ORDER BY users DESC
+    reference_note: "'가입자 수'는 누적이라 탈퇴자를 포함하고 dim_user 기준으로 센다. 기기는 dim_user.primary_device_type 이다."
+    trap: "이벤트의 device_type(fact_user_event)으로 세면 이벤트 수 또는 다른 기준의 사용자 수가 된다."
+    likely_wrong: "fact_user_event.device_type 별 COUNT(DISTINCT user_id) 를 센다 (한 사용자가 여러 기기에 잡힌다)."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q07
+    question: "아티스트 쪽에서 올린 소통 활동은 종류별로 몇 건이야?"
+    category: 단순 집계
+    expected_kind: rows
+    reference_sql: |-
+      SELECT activity_type, COUNT(*) AS activities
+      FROM fact_artist_activity
+      GROUP BY activity_type
+      ORDER BY activities DESC
+    reference_note: "아티스트가 공급한 소통은 fact_artist_activity 이고 종류는 activity_type(post/message/live)이다."
+    trap: "팬의 행동 로그(fact_user_event)와 헷갈리기 쉽다."
+    likely_wrong: "fact_user_event 의 artist_post_view, live_view_start 같은 팬 이벤트를 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q08
+    question: "결제를 시작만 하고 끝내지 않은 주문은 몇 건이야?"
+    category: 단순 집계
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS pending_orders
+      FROM fact_order
+      WHERE status = 'pending'
+    reference_note: "table_guide: pending 은 결제를 시작했지만 구매가 완료되지 않은 주문이다."
+    trap: 없음
+    likely_wrong: "completed_at_utc IS NULL 로 세거나(같을 수도 다를 수도 있다) begin_checkout 이벤트 수에서 purchase 이벤트 수를 뺀다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  # ============================== 조인 (8) ==============================
+  - id: Q09
+    question: "아티스트별로 등록된 상품이 몇 개인지 이름과 같이 보여줘."
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT a.artist_name, COUNT(*) AS products
+      FROM dim_product p
+      JOIN dim_artist a ON a.artist_id = p.artist_id
+      GROUP BY a.artist_name
+      ORDER BY products DESC
+    reference_note: "dim_product.artist_id 는 NOT NULL 이라 내부 조인으로 모든 상품이 잡힌다. conventions: ID 대신 artist_name 을 보여준다."
+    trap: "artist_id 만 보여주면 conventions(이름을 보여준다)와 다르고, 채점에서도 값이 달라 실패한다."
+    likely_wrong: "dim_product 만 써서 artist_id 로 묶는다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q10
+    question: "상품 종류별로 몇 개나 팔렸어? 결제가 끝나지 않은 주문은 빼고."
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT p.product_type, SUM(i.quantity) AS quantity
+      FROM fact_order_item i
+      JOIN fact_order o ON o.transaction_id = i.transaction_id
+      JOIN dim_product p ON p.product_id = i.product_id
+      WHERE o.status <> 'pending'
+      GROUP BY p.product_type
+      ORDER BY quantity DESC
+    reference_note: "수량은 fact_order_item.quantity 이고, '결제가 끝나지 않은 주문'은 status = 'pending' 이다(purchase_count 와 같은 기준). 환불된 주문은 질문이 빼라고 하지 않았으므로 포함한다."
+    trap: "pending 제외 조건과 수량 합계(SUM)가 동시에 필요하다. 행 수(COUNT)로 세면 수량이 2 이상인 줄에서 틀린다."
+    likely_wrong: "COUNT(*) 로 주문 상세 줄 수를 세거나, fact_order 를 조인하지 않아 pending 을 포함한다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q11
+    question: "지금 유지되고 있는 메시지 구독이 아티스트별로 몇 건이야?"
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT a.artist_name, COUNT(*) AS active_subscriptions
+      FROM fact_message_subscription s
+      JOIN dim_artist a ON a.artist_id = s.artist_id
+      WHERE s.ended_at_utc IS NULL
+      GROUP BY a.artist_name
+      ORDER BY active_subscriptions DESC
+    reference_note: "metrics.active_subscription: 유지 중인 구독은 ended_at_utc IS NULL 이다. 질문이 '몇 건'이므로 구독 행 수를 센다."
+    trap: "해지 사유(cancel_reason_category IS NULL)로 판단하면 정의와 다르다."
+    likely_wrong: "cancel_reason_category IS NULL 로 거르거나 message_subscription_start 이벤트 수를 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q12
+    question: "아티스트별 콘텐츠 누적 조회수를 알려줘."
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT a.artist_name, SUM(c.total_views) AS total_views
+      FROM mart_content_performance c
+      JOIN dim_artist a ON a.artist_id = c.artist_id
+      GROUP BY a.artist_name
+      ORDER BY total_views DESC
+    reference_note: "콘텐츠별 조회 성과는 mart_content_performance.total_views 에 있다. 아티스트 이름은 dim_artist 와 조인해서 붙인다."
+    trap: "unique_viewers 를 더하면 조회수가 아니라 (중복된) 조회자 수가 된다."
+    likely_wrong: "SUM(unique_viewers) 를 쓰거나 fact_user_event 의 content_view 를 직접 센다 (값이 같은지는 확인되지 않았다)."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q13
+    question: "국가 그룹별 구매 건수는 어떻게 돼?"
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT u.country_group, COUNT(*) AS purchases
+      FROM fact_order o
+      JOIN dim_user u ON u.user_id = o.user_id
+      WHERE o.status <> 'pending'
+      GROUP BY u.country_group
+      ORDER BY purchases DESC
+    reference_note: "metrics.purchase_count: 구매 건수는 status <> 'pending' 인 주문 수다. 국가 그룹은 dim_user 에 있어 조인이 필요하다. 주문 건수라서 탈퇴자의 주문도 포함한다."
+    trap: "pending 주문을 포함하면 '결제를 시작한 주문 수'가 된다."
+    likely_wrong: "status 조건 없이 세거나 status = 'completed' 만 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q14
+    question: "앨범 상품이 들어 있는 구매 주문은 몇 건이야?"
+    category: 조인
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT o.transaction_id) AS album_orders
+      FROM fact_order o
+      JOIN fact_order_item i ON i.transaction_id = o.transaction_id
+      JOIN dim_product p ON p.product_id = i.product_id
+      WHERE o.status <> 'pending'
+        AND p.product_type = 'album'
+    reference_note: "주문 하나에 앨범 줄이 여러 개일 수 있어 주문 번호를 DISTINCT 로 센다. 구매 주문은 status <> 'pending' 이다."
+    trap: "세 테이블을 조인하면 주문이 줄 수만큼 불어난다. DISTINCT 없이 세면 주문 건수가 아니라 줄 수다."
+    likely_wrong: "COUNT(*) 로 주문 상세 줄 수를 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q15
+    question: "그룹 아티스트와 솔로 아티스트 중 어느 쪽이 콘텐츠를 더 많이 올렸어? 각각 몇 개인지 알려줘."
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT a.artist_type, COUNT(*) AS contents
+      FROM dim_content c
+      JOIN dim_artist a ON a.artist_id = c.artist_id
+      GROUP BY a.artist_type
+      ORDER BY contents DESC
+    reference_note: "아티스트 유형(group/solo)은 dim_artist.artist_type 이고 콘텐츠는 dim_content 다. 유형별 콘텐츠 수를 두 행으로 돌려준다."
+    trap: "아티스트 수(그룹 2, 솔로 1)를 답하거나 더 많은 쪽 한 행만 돌려주기 쉽다."
+    likely_wrong: "LIMIT 1 로 많은 쪽만 내거나 fact_artist_activity 의 활동 수를 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q16
+    question: "유입 채널별로 현재 메시지 구독을 유지 중인 팬이 몇 명인지 알려줘. 탈퇴한 사용자는 빼고."
+    category: 조인
+    expected_kind: rows
+    reference_sql: |-
+      SELECT u.acquisition_channel, COUNT(DISTINCT s.user_id) AS subscribers
+      FROM fact_message_subscription s
+      JOIN dim_user u ON u.user_id = s.user_id
+      WHERE s.ended_at_utc IS NULL
+        AND u.is_deleted IS NOT TRUE
+      GROUP BY u.acquisition_channel
+      ORDER BY subscribers DESC
+    reference_note: "유지 중 = ended_at_utc IS NULL. '팬이 몇 명'이므로 한 사람이 여러 아티스트를 구독해도 1명으로 센다(DISTINCT). 탈퇴자 제외는 질문에 명시돼 있다."
+    trap: "구독 건수(행 수)와 구독자 수(사람 수)가 다르다."
+    likely_wrong: "COUNT(*) 로 구독 건수를 세거나 탈퇴자 조건을 빠뜨린다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  # ============================== 지표 정의 (7) ==============================
+  - id: Q17
+    question: "분석 기간 전체 순매출은 얼마야?"
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT SUM(order_amount - refund_amount) AS net_revenue
+      FROM fact_order
+      WHERE status <> 'pending'
+    reference_note: "metrics.net_revenue 의 sql_hint 그대로다. 단 시맨틱 레이어에 '[검증 필요: 대시보드 Page 3 의 매출 정의와 같은지 확인]'이 붙어 있어 정의가 확정되지 않았다."
+    trap: "pending 주문의 금액을 포함하거나 환불액을 빼지 않는 실수."
+    likely_wrong: "SUM(order_amount) 만 내거나 status = 'completed' 만 더한다."
+    tolerance: {abs: 1}
+    needs_definition: true
+    heldout_candidate: false
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q18
+    question: "지금까지 환불해 준 금액은 다 합쳐서 얼마야?"
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT SUM(refund_amount) AS refund_total
+      FROM fact_order
+    reference_note: "metrics.refund_amount_total: 환불액은 fact_order 의 SUM(refund_amount) 이다. 환불이 없는 주문은 refund_amount 가 0(기본값)이라 조건 없이 더해도 같다."
+    trap: "환불된 주문의 주문금액(order_amount)을 더하면 부분 환불에서 틀린다."
+    likely_wrong: "status = 'refunded' 인 주문의 SUM(order_amount) 를 낸다."
+    tolerance: {abs: 1}
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q19
+    question: "현재 유지 중인 메시지 구독은 총 몇 건이야?"
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS active_subscriptions
+      FROM fact_message_subscription
+      WHERE ended_at_utc IS NULL
+    reference_note: "metrics.active_subscription: ended_at_utc IS NULL 인 구독 행 수."
+    trap: "구독 시작 이벤트 수에서 해지 이벤트 수를 빼는 방식은 정의와 다르다(만료는 해지 이벤트가 없을 수 있다)."
+    likely_wrong: "message_subscription_start 수 - message_subscription_cancel 수를 계산한다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q20
+    question: "결제를 시작한 주문은 전부 몇 건이야? 구매 완료 여부와 상관없이."
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS checkout_started_orders
+      FROM fact_order
+    reference_note: "purchase_count 설명: fact_order 전체 행은 결제를 시작한 주문 수(pending 포함)이며 구매 건수와 다르다. 질문이 '완료 여부와 상관없이'라고 했으므로 전체 행이다."
+    trap: "구매 건수 정의(status <> 'pending')를 습관적으로 적용하면 틀린다."
+    likely_wrong: "WHERE status <> 'pending' 을 붙인다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q21
+    question: "W1 참여 재방문율을 하나의 값으로만 알려줘."
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT ROUND(COUNT(DISTINCT w1.user_id)::numeric / COUNT(DISTINCT w0.user_id), 4) AS w1_retention
+      FROM mart_user_daily w0
+      LEFT JOIN mart_user_daily w1
+        ON w1.user_id = w0.user_id
+       AND w1.had_core_activity
+       AND w1.activity_date_kst BETWEEN DATE '2026-01-08' AND DATE '2026-01-14'
+      WHERE w0.had_core_activity
+        AND w0.activity_date_kst BETWEEN DATE '2026-01-01' AND DATE '2026-01-07'
+    reference_note: "정의 미확정. 시맨틱 레이어의 retention_w1 은 TODO 다(PRD 의 공식 정의를 옮겨야 한다). 이 SQL 은 '첫 주에 핵심 활동한 팬 중 다음 주에도 핵심 활동한 비율'이라는 임의의 가정으로 쓴 자리 채움이며 정답으로 쓰면 안 된다."
+    trap: "정의가 없는 지표다. 모델이 임의로 정의를 만들어 숫자를 내는지 본다."
+    likely_wrong: "임의의 기간과 기준으로 재방문율을 계산해 낸다."
+    tolerance: {abs: 0.0001, accept_percent_or_ratio: true}
+    needs_definition: true
+    heldout_candidate: false
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q22
+    question: "마지막 날짜 기준으로 이탈 위험(at_risk)이거나 휴면(dormant)인 팬은 합쳐서 몇 명이야?"
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT m.user_id) AS fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
+        AND m.activity_status IN ('at_risk', 'dormant')
+        AND u.is_deleted IS NOT TRUE
+    reference_note: "metrics.activity_status: 현재 상태는 마지막 날짜의 행만 보고 사용자 수를 센다. 활동 상태 질문은 탈퇴자 제외가 기본이다(DESIGN.md 9장). 두 상태를 질문이 직접 이름으로 지정했다."
+    trap: "탈퇴자 기본 제외, 마지막 날짜만 보기, 두 상태를 함께 세기."
+    likely_wrong: "날짜 조건 없이 전체 기간의 행을 세거나 탈퇴자를 포함한다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q23
+    question: "구매 건수 중에서 환불(부분 환불 포함)된 주문의 비율을 하나의 값으로만 알려줘."
+    category: 지표 정의
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT ROUND(COUNT(*) FILTER (WHERE status IN ('refunded', 'partially_refunded'))::numeric / COUNT(*), 4) AS refund_rate
+      FROM fact_order
+      WHERE status <> 'pending'
+    reference_note: "분모는 구매 건수(status <> 'pending'), 분자는 그중 환불 또는 부분 환불 주문이다. 두 정의 모두 시맨틱 레이어에 있다."
+    trap: "분모를 전체 주문(pending 포함)으로 잡으면 비율이 낮아진다."
+    likely_wrong: "분모를 COUNT(*) FROM fact_order 전체로 잡거나 분자에서 부분 환불을 뺀다."
+    tolerance: {abs: 0.0001, accept_percent_or_ratio: true}
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  # ============================== 기간 해석 (6) ==============================
+  - id: Q24
+    question: "2026년 2월 한 달 동안 구매 건수는 몇 건이었어?"
+    category: 기간 해석
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS purchases
+      FROM fact_order
+      WHERE status <> 'pending'
+        AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN DATE '2026-02-01' AND DATE '2026-02-28'
+    reference_note: "conventions: fact_order 에는 KST 날짜 컬럼이 없어 completed_at_utc 를 KST 로 바꿔 날짜를 자른다. 구매 건수는 status <> 'pending'. 2026년 2월은 28일까지다."
+    trap: "UTC 시각으로 날짜를 자르면 월 경계의 9시간 구간이 다른 달로 넘어간다."
+    likely_wrong: "completed_at_utc::date 또는 created_at_utc 로 자른다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q25
+    question: "최근 7일 동안 구매 건수는 몇 건이야? 데이터의 마지막 날을 포함해서 7일로 세어줘."
+    category: 기간 해석
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS purchases
+      FROM fact_order
+      WHERE status <> 'pending'
+        AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date >=
+            (SELECT MAX((completed_at_utc AT TIME ZONE 'Asia/Seoul')::date) FROM fact_order WHERE status <> 'pending') - 6
+    reference_note: "conventions: '최근 N일'의 기준일은 CURRENT_DATE 가 아니라 해당 테이블 날짜의 MAX 다. 질문 문장이 \"데이터의 마지막 날을 포함해서 7일\"이라고 못 박았으므로 범위는 마지막 날 - 6일 ~ 마지막 날(양끝 포함, 7일)이다. 결제 완료 시각은 KST 날짜로 바꿔 자른다. 해석은 2026-11-13 에 사람이 정했다."
+    trap: "CURRENT_DATE 기준으로 계산하면 0건이 된다(데이터는 2026-03-31 에 끝난다)."
+    likely_wrong: "CURRENT_DATE - 7 을 쓰거나, 경계를 >= MAX - 7 로 잡아 8일을 센다(또는 > MAX - 7 로 7일이 아니라 6일을 센다)."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: true
+    verification:
+      verified_by: "담당자(사람)"
+      verified_on: "2026-11-13"
+      method: "DBeaver 직접 실행 + 이벤트 테이블 독립 확인"
+      result_value: "90"
+      independent_check: "일치"
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q26
+    question: "2026년 3월에 새로 가입한 사용자는 몇 명이야?"
+    category: 기간 해석
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS signups
+      FROM dim_user
+      WHERE signup_date_kst BETWEEN DATE '2026-03-01' AND DATE '2026-03-31'
+    reference_note: "가입자는 dim_user 기준, 날짜는 KST 컬럼(signup_date_kst)으로 자른다. 가입자 수는 누적 성격이라 탈퇴자를 포함한다."
+    trap: "sign_up 이벤트로 세거나 signup_timestamp_utc 로 날짜를 자르는 실수."
+    likely_wrong: "fact_user_event 의 sign_up 이벤트를 3월로 걸러 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q27
+    question: "월별 구매 건수 추이를 보여줘."
+    category: 기간 해석
+    expected_kind: rows
+    reference_sql: |-
+      SELECT to_char(completed_at_utc AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month, COUNT(*) AS purchases
+      FROM fact_order
+      WHERE status <> 'pending'
+      GROUP BY 1
+      ORDER BY 1
+    reference_note: "구매 건수(status <> 'pending')를 결제 완료 시각의 KST 월로 묶는다. 월은 'YYYY-MM' 글자(예: 2026-01)로 표기하기로 2026-11-13 에 사람이 정했다. 질문 문장은 형식을 말하지 않으므로, 모델이 그 달 1일 날짜(2026-01-01)로 내면 값이 같아도 채점에서 떨어진다."
+    trap: "UTC 로 월을 자르면 월 경계의 주문이 다른 달로 간다. pending 포함 실수."
+    likely_wrong: "date_trunc('month', completed_at_utc) 를 그대로 쓰거나 created_at_utc 를 쓴다. 월을 날짜(2026-01-01)로 내서 글자 형식과 달라진다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q28
+    question: "이번 달에 올라온 콘텐츠는 몇 개야?"
+    category: 기간 해석
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS contents
+      FROM dim_content
+      WHERE date_trunc('month', published_date_kst) = (SELECT date_trunc('month', MAX(published_date_kst)) FROM dim_content)
+    reference_note: "conventions: '이번 달'의 기준은 데이터의 마지막 날짜다. dim_content 의 published_date_kst MAX 가 속한 달(프로파일상 2026-03)을 이번 달로 본다."
+    trap: "CURRENT_DATE 의 달로 계산하면 0건이 된다."
+    likely_wrong: "date_trunc('month', CURRENT_DATE) 와 비교한다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q29
+    question: "2026년 1월에 새로 생긴 팔로우는 몇 건이야?"
+    category: 기간 해석
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS follows
+      FROM bridge_user_artist_follow
+      WHERE (followed_at_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN DATE '2026-01-01' AND DATE '2026-01-31'
+    reference_note: "팔로우 이력은 1행 = 1번의 팔로우다. 이 테이블에는 KST 날짜 컬럼이 없어 followed_at_utc 를 KST 로 바꿔 자른다. 프로파일상 가장 이른 팔로우가 UTC 2025-12-31 15:14(= KST 01-01 00:14)라서 UTC 로 자르면 1월에서 빠진다. 대안: fact_user_event 의 artist_follow 이벤트를 event_date_kst 로 세는 방법(행 수가 같다고 시맨틱 레이어에 적혀 있다)도 같은 값이어야 한다."
+    trap: "UTC 날짜로 자르면 KST 1월 1일 새벽의 팔로우가 빠지고 1월 31일 밤 것이 2월로 간다."
+    likely_wrong: "followed_at_utc::date BETWEEN '2026-01-01' AND '2026-01-31' 로 자른다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  # ============================== 함정 (6) ==============================
+  - id: Q30
+    question: "분석 기간(2026년 1월~3월) 동안 가입한 사용자는 몇 명이야?"
+    category: 함정
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS signups
+      FROM dim_user
+      WHERE signup_date_kst BETWEEN DATE '2026-01-01' AND DATE '2026-03-31'
+    reference_note: "conventions: 가입자 수는 반드시 dim_user 기준으로 센다. sign_up 이벤트는 550건뿐이라 가입자 전체와 다르다고 적혀 있다. 기간 안 가입자 수가 550과 같은지 다른지는 사람이 확인해야 한다(같다면 이 문항은 함정으로서 구분력이 없다)."
+    trap: "가입 이벤트(sign_up) 수를 가입자 수로 답하는 실수."
+    likely_wrong: "fact_user_event WHERE event_name = 'sign_up' 을 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q31
+    question: "장바구니에 담은 건 중에서 구매까지 이어진 비율을 하나의 값으로만 알려줘."
+    category: 함정
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT ROUND(COUNT(*) FILTER (WHERE reached_purchase)::numeric / COUNT(*), 4) AS cart_to_purchase_rate
+      FROM mart_commerce_funnel
+      WHERE reached_add_to_cart
+    reference_note: "mart_commerce_funnel 은 사용자 x 상품 단위다. 분모는 장바구니에 도달한 행, 분자는 그중 구매에 도달한 행이다. is_closed_funnel_complete 로 거르면 100% 가 되므로 쓰지 않는다(시맨틱 레이어의 주의)."
+    trap: "is_closed_funnel_complete 로 필터하면 항상 100% 가 된다. 사용자 수 기준으로 세는 실수도 있다."
+    likely_wrong: "WHERE is_closed_funnel_complete 를 쓰거나 COUNT(DISTINCT user_id) 로 사람 기준 비율을 낸다."
+    tolerance: {abs: 0.0001, accept_percent_or_ratio: true}
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q32
+    question: "한 번이라도 구매한 적 있는 팬은 몇 명이야? 탈퇴한 사용자는 빼고."
+    category: 함정
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT o.user_id) AS buyers
+      FROM fact_order o
+      JOIN dim_user u ON u.user_id = o.user_id
+      WHERE o.status <> 'pending'
+        AND u.is_deleted IS NOT TRUE
+    reference_note: "구매는 status <> 'pending' 인 주문이다. 한 사람이 여러 번 구매할 수 있어 사용자를 DISTINCT 로 센다. 질문 문장이 \"탈퇴한 사용자는 빼고\"라고 명시했으므로 dim_user 와 조인해 is_deleted IS NOT TRUE 로 탈퇴자를 제외한다(활동 상태 질문의 기본 규칙과 같다. 2026-11-13 에 사람이 정했다)."
+    trap: "pending 주문만 있는 사람을 구매자로 세는 실수, 주문 건수를 사람 수로 답하는 실수."
+    likely_wrong: "status 조건 없이 COUNT(DISTINCT user_id) 를 내거나 COUNT(*) 를 낸다. 탈퇴자 제외 조건을 빠뜨린다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q33
+    question: "분석 기간 중에 하루라도 휴면 상태였던 팬은 몇 명이야?"
+    category: 함정
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(DISTINCT m.user_id) AS fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_status = 'dormant'
+        AND u.is_deleted IS NOT TRUE
+    reference_note: "mart_user_daily 는 사용자 x 일자 행이다. dormant 행 수(326)는 사용자 수가 아니므로 DISTINCT 로 사람을 센다. 활동 상태 질문이라 탈퇴자를 기본으로 제외한다."
+    trap: "사용자 x 일자 행 수를 사용자 수로 답하는 실수, 탈퇴자 기본 제외."
+    likely_wrong: "COUNT(*) 로 dormant 행 수를 내거나 마지막 날짜만 본다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q34
+    question: "현재 이탈 위험 상태인 팬을 유입 채널별로 나누면 각각 몇 명이야?"
+    category: 함정
+    expected_kind: rows
+    reference_sql: |-
+      SELECT u.acquisition_channel, COUNT(DISTINCT m.user_id) AS fans
+      FROM mart_user_daily m
+      JOIN dim_user u ON u.user_id = m.user_id
+      WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
+        AND m.activity_status = 'at_risk'
+        AND u.is_deleted IS NOT TRUE
+      GROUP BY u.acquisition_channel
+      ORDER BY fans DESC
+    reference_note: "'이탈 위험 상태'는 activity_status = 'at_risk'(metrics.churn_risk_14d 의 기본 기준)이고 이탈 위험 '순위'(Day 3 점수)와 다르다. 현재 = 마지막 날짜, 탈퇴자 기본 제외. 채널별 합계는 eval_notes.md 의 '현재 이탈 위험 팬 수'와 같아야 한다."
+    trap: "활동 상태(at_risk)와 이탈 위험 순위를 섞는 실수, 탈퇴자 기본 제외, 마지막 날짜."
+    likely_wrong: "dormant 까지 포함하거나 탈퇴자를 포함하거나 전체 기간의 행을 센다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q35
+    question: "2026년 1월 1일 하루 동안 구매 완료된 주문은 몇 건이야?"
+    category: 함정
+    expected_kind: scalar
+    reference_sql: |-
+      SELECT COUNT(*) AS purchases
+      FROM fact_order
+      WHERE status <> 'pending'
+        AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date = DATE '2026-01-01'
+    reference_note: "날짜는 KST 기준이다. KST 1월 1일은 UTC 로 2025-12-31 15:00 ~ 2026-01-01 15:00 이다. 프로파일상 가장 이른 결제 완료가 UTC 2025-12-31 15:45 라서 UTC 날짜로 자르면 그 구간이 빠진다. 결과가 0 이면 이 문항은 구분력이 없으니 사람이 확인해야 한다. \"구매 완료\"는 status <> 'pending' 이다(completed, refunded, partially_refunded 를 포함한다)."
+    trap: "KST 와 UTC 의 날짜 차이. UTC 로 자르면 다른 숫자가 나온다."
+    likely_wrong: "completed_at_utc::date = '2026-01-01' 로 자른다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: true
+    verified: true
+    verification:
+      verified_by: "담당자(사람)"
+      verified_on: "2026-11-13"
+      method: "DBeaver 직접 실행 + 이벤트 테이블 독립 확인"
+      result_value: "7"
+      independent_check: "일치"
+      trap_check: "UTC 로 자르면 12 건, KST 는 7 건"
+    source: draft-by-claude-code-2026-11-12
+
+  # ============================== 거절 (5): 데이터에 없는 정보 ==============================
+  - id: Q36
+    question: "팬들의 성별 비율은 어떻게 돼?"
+    category: 거절
+    expected_kind: refusal
+    reference_sql: null
+    reference_note: "dim_user 에 성별 컬럼이 없다(컬럼: user_id, 가입 시각/날짜, country_group, acquisition_channel, primary_device_type, is_deleted, deleted_at_utc). 다른 테이블에도 없다."
+    trap: "없는 정보를 다른 컬럼으로 대신 답하는지 본다."
+    likely_wrong: "country_group 이나 primary_device_type 비율을 성별 대신 내놓는다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: null
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q37
+    question: "상품 리뷰 평점이 가장 높은 상품은 뭐야?"
+    category: 거절
+    expected_kind: refusal
+    reference_sql: null
+    reference_note: "리뷰와 평점을 담은 테이블이나 컬럼이 없다. dim_product 에는 이름, 종류, 가격, 출시일뿐이다."
+    trap: "평점 대신 판매량이나 조회수로 '가장 인기 있는 상품'을 답하는지 본다."
+    likely_wrong: "판매 수량이나 view_item 수가 가장 많은 상품을 답한다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: null
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q38
+    question: "광고비 대비 매출(ROAS)은 채널별로 얼마야?"
+    category: 거절
+    expected_kind: refusal
+    reference_sql: null
+    reference_note: "광고비(비용) 데이터가 없다. 유입 채널(acquisition_channel)과 매출은 있지만 분모가 되는 광고비가 없어 계산할 수 없다."
+    trap: "채널별 매출만 내고 ROAS 라고 하는지 본다."
+    likely_wrong: "유입 채널별 매출 합계를 ROAS 로 내놓는다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: null
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q39
+    question: "팬들이 사는 도시별로 가입자 수를 알려줘."
+    category: 거절
+    expected_kind: refusal
+    reference_sql: null
+    reference_note: "지역 정보는 country_group(domestic / overseas_asia / overseas_other) 세 값뿐이고 도시 컬럼이 없다."
+    trap: "도시 대신 국가 그룹으로 답하는지 본다."
+    likely_wrong: "country_group 별 가입자 수를 도시별이라고 내놓는다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: null
+    verified: false
+    source: draft-by-claude-code-2026-11-12
+
+  - id: Q40
+    question: "쿠폰 코드별 사용 횟수는 몇 번이야?"
+    category: 거절
+    expected_kind: refusal
+    reference_sql: null
+    reference_note: "쿠폰 코드를 담은 컬럼이 없다. fact_order_item 에 discount_amount(할인액)는 있지만 어떤 쿠폰인지 구분할 정보가 없다."
+    trap: "할인액이 있는 줄 수를 쿠폰 사용 횟수로 답하는지 본다."
+    likely_wrong: "discount_amount > 0 인 주문 상세 줄 수를 쿠폰 사용 횟수로 내놓는다."
+    needs_definition: false
+    heldout_candidate: true
+    guard_ok: null
+    verified: false
+    source: draft-by-claude-code-2026-11-12
