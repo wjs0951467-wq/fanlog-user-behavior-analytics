@@ -114,11 +114,12 @@ def cells_equal(generated, reference, tolerance: dict) -> bool:
 
 
 def compare_scalar(generated_rows, reference_rows, tolerance: dict) -> tuple:
-    """(통과 여부, 설명). 정답은 숫자 하나여야 한다.
+    """(통과 여부, 설명). 정답은 숫자 하나(1행 1열)여야 한다.
 
-    모델의 결과는 정확히 1행이어야 하고, 그 행의 숫자 칸 중 하나가 정답과 같으면 통과다.
-    한 행에 (분자, 분모, 비율)을 같이 내는 답이 흔해서 "칸이 정확히 하나"를 요구하지 않았다.
-    그 대신 어떻게 통과했는지(single_cell / one_of_cells)를 남겨서, 우연히 다른 칸이 맞은 경우를 사람이 확인할 수 있게 한다.
+    모델의 결과도 정확히 1행 1열이고 그 값이 정답과 허용 오차 안에서 같을 때만 통과다 (2026-11-13 결정으로 엄격하게 바꿨다).
+    분자, 분모, 비율을 한 행에 같이 낸 답은 그중 한 칸이 맞아도 실패다: 질문이 하나의 값을 물었는데 여러 값을 내놓은 것이고,
+    "여러 칸 중 하나가 우연히 맞은" 경우를 통과시키면 틀린 SQL 도 통과하기 때문이다.
+    그 대가로, 같은 답을 열을 더 붙여 내는 모델은 떨어진다. 그래서 scalar 문항의 문장은 "하나의 값"을 요구하는 형태여야 공정하다.
     """
     ref = normalize_rows(reference_rows)
     if len(ref) != 1 or len(ref[0]) != 1 or not is_number(ref[0][0]):
@@ -126,11 +127,12 @@ def compare_scalar(generated_rows, reference_rows, tolerance: dict) -> tuple:
     gen = normalize_rows(generated_rows)
     if len(gen) != 1:
         return False, f"행 수가 1이 아님 ({len(gen)}행)"
-    numbers = [c for c in gen[0] if is_number(c)]
-    if not numbers:
+    if len(gen[0]) != 1:
+        return False, f"열 수가 1이 아님 ({len(gen[0])}열)"
+    if not is_number(gen[0][0]):
         return False, "숫자 칸이 없음"
-    if any(numbers_close(n, ref[0][0], tolerance) for n in numbers):
-        return True, "single_cell" if len(gen[0]) == 1 else "one_of_cells"
+    if numbers_close(gen[0][0], ref[0][0], tolerance):
+        return True, "single_cell"
     return False, "값이 다름"
 
 

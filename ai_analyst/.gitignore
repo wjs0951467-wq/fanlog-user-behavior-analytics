@@ -4,3 +4,8 @@ __pycache__/
 semantic/schema_profile.json
 # 에이전트 질문별 호출 기록 (app/agent.py 가 씀)
 logs/
+# 평가 실행 결과 (eval/run_eval.py 가 씀). 폴더가 아니라 안의 파일을 제외해야 아래 예외(!)가 먹는다.
+eval/results/*
+# 단, 보류 질문 노출 기록은 추적한다: 다른 PC 에서도 "보류 질문 노출 후 시맨틱 레이어가 바뀜" 경고가 동작해야 한다.
+# (eval/exposure.py 의 REGISTRY_NAME). 하위 폴더나 다른 이름의 같은 계열 파일은 제외된다.
+!eval/results/heldout_exposure.json

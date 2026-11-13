@@ -11,12 +11,12 @@ questions:
     category: 지표 정의
     split: dev
     verified: false
-    expected_kind: scalar
+    expected_kind: rows
     reference_sql: |-
       SELECT ROUND(COUNT(*) FILTER (WHERE reached_purchase)::numeric / COUNT(*), 4) AS purchase_conversion
       FROM mart_commerce_funnel
     tolerance: {abs: 0.0001, accept_percent_or_ratio: true}
-    notes: "eval_notes.md 의 정답은 791 / 4,817 = 16.42%. 모델이 0.1642 로 답하든 16.42 로 답하든 같은 답으로 본다."
+    notes: "eval_notes.md 의 정답은 791 / 4,817 = 16.42%. 모델이 0.1642 로 답하든 16.42 로 답하든 같은 답으로 본다. 개발용 질문 문장은 eval_notes.md 와 같아야 해서 하나의 값을 요구하도록 고칠 수 없다(scalar 는 1행 1열만 통과). 그래서 kind 를 rows 로 둔다(2026-11-13): 한 행 한 열 결과만 맞고, 열을 더 내면 열 수가 달라 실패한다는 점은 같다."
     source: eval_notes.md
 
   - id: DEV02

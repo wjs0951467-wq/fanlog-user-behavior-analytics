@@ -64,13 +64,16 @@ def test_ratio_answer_matches_a_percent_reference_when_allowed():
     assert G.grade(q(tolerance={"abs": 0.01, "accept_percent_or_ratio": True}), answered([[0.1642]]), ref([[16.42]]))["passed"]
 
 
-def test_scalar_in_a_row_with_numerator_and_denominator_passes_and_says_how():
+def test_scalar_with_several_cells_in_the_row_fails_even_if_one_cell_is_right():
+    """규칙 변경(2026-11-13): scalar 는 1행 1열이고 그 값이 맞을 때만 통과한다. 분자, 분모, 비율을 같이 낸 답은 실패다."""
     r = G.grade(q(tolerance={"abs": 0.0001}), answered([[791, 4817, 0.1642]], columns=("a", "b", "rate")), ref([[0.1642]]))
-    assert r["passed"] and r["detail"] == "one_of_cells"
+    assert r["passed"] is False and r["failure"] == G.FAIL_VALUE and "열 수가 1이 아님" in r["detail"]
 
 
 @pytest.mark.parametrize("rows, word", [([], "행 수"), ([[1], [2]], "행 수"), ([["많음"]], "숫자 칸"), ([[None]], "숫자 칸"),
-                                        ([[True]], "숫자 칸"), ([["879"]], "숫자 칸")])
+                                        ([[True]], "숫자 칸"), ([["879"]], "숫자 칸"),
+                                        ([[879, 879]], "열 수가 1이 아님"), ([["이름", 879]], "열 수가 1이 아님"),
+                                        ([[879, None]], "열 수가 1이 아님"), ([[]], "열 수가 1이 아님")])
 def test_scalar_wrong_shapes_fail(rows, word):
     r = G.grade(q(), answered(rows), ref([[879]]))
     assert r["passed"] is False and r["failure"] == G.FAIL_VALUE and word in r["detail"]
@@ -226,3 +229,25 @@ def test_usage_and_attempts_are_carried_over():
 def test_row_cap_is_noted():
     r = G.grade(q("rows"), answered(ROWS, row_cap_note="결과가 정확히 1000행이라 더 있을 수 있음"), ref(ROWS))
     assert r["passed"] and "상한" in r["detail"]
+
+
+# ---------- scalar 엄격화: 1행 1열이고 그 값이 맞을 때만 통과 (2026-11-13 결정) ----------
+@pytest.mark.parametrize("rows", [[[879, 879]], [[0.1642, 791]], [[791, 4817, 0.1642]], [["label", 879]], [[879, 0]]])
+def test_scalar_never_passes_with_more_than_one_column(rows):
+    r = G.grade(q(tolerance={"abs": 1000}), answered(rows, columns=("a",) * len(rows[0])), ref([[879]]))
+    assert r["passed"] is False and r["failure"] == G.FAIL_VALUE
+
+
+def test_scalar_single_cell_with_a_different_column_name_still_passes():
+    assert G.grade(q(), answered([[879]], columns=("뭐든",)), ref([[879]]))["passed"]
+
+
+def test_scalar_percent_form_still_needs_exactly_one_cell():
+    tol = {"abs": 0.0001, "accept_percent_or_ratio": True}
+    assert G.grade(q(tolerance=tol), answered([[16.42]]), ref([[0.1642]]))["passed"]
+    assert not G.grade(q(tolerance=tol), answered([[16.42, 0.1642]]), ref([[0.1642]]))["passed"]
+
+
+def test_rows_with_a_different_column_count_still_fail():
+    r = G.grade(q("rows"), answered([[1, 2]], columns=("a", "b")), ref([[1]]))
+    assert r["passed"] is False and r["failure"] == G.FAIL_VALUE and "열 수가 다름" in r["detail"]

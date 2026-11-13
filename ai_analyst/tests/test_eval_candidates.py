@@ -195,3 +195,77 @@ def test_checklist_has_a_row_for_every_candidate():
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         assert len(cells) == 5 and cells[1] == c["question"], c["id"]
         assert cells[2] and cells[3] == "" and cells[4] == "[ ]"  # 결과 칸은 비어 있고 체크는 사람이 한다
+
+
+# ---------- 2026-11-13 결정 반영: Q25, Q27, Q32 ----------
+def by_id(qid):
+    return next(c for c in CANDIDATES if c["id"] == qid)
+
+
+def test_q25_says_the_last_day_is_included_in_the_seven_days():
+    c = by_id("Q25")
+    assert "마지막 날을 포함해서 7일" in c["question"]
+    assert "마지막 날 - 6일 ~ 마지막 날" in c["reference_note"]
+    sql = squash(c["reference_sql"])
+    assert ">= (SELECT MAX(" in sql and sql.rstrip().endswith("- 6")          # MAX - 6 이상 (마지막 날 포함 7일)
+    assert "- 7" not in sql
+
+
+def test_q27_month_is_written_as_a_yyyy_mm_string():
+    c = by_id("Q27")
+    sql = squash(c["reference_sql"])
+    assert "to_char(" in sql and "'YYYY-MM'" in sql and "Asia/Seoul" in sql
+    assert "date_trunc" not in sql and "::date AS month" not in sql
+    assert "2026-01" in c["reference_note"] and "YYYY-MM" in c["reference_note"]
+
+
+def test_q27_keeps_pending_out_and_still_passes_the_guard():
+    sql = squash(by_id("Q27")["reference_sql"])
+    assert "status <> 'pending'" in sql and "GROUP BY 1" in sql and "ORDER BY 1" in sql
+    assert by_id("Q27")["guard_ok"] is True
+
+
+def test_q32_states_that_deleted_users_are_excluded_in_the_question_and_the_sql():
+    c = by_id("Q32")
+    assert "탈퇴한 사용자는 빼고" in c["question"]
+    sql = squash(c["reference_sql"])
+    assert "JOIN dim_user" in sql and "is_deleted IS NOT TRUE" in sql and "COUNT(DISTINCT o.user_id)" in sql
+    assert "status <> 'pending'" in sql and "제외" in c["reference_note"]
+
+
+# ---------- scalar 문항의 문장은 하나의 값만 묻는다 ----------
+RATIO_WORDS = ("비율", "전환율", "재방문율", "율은")
+
+
+def scalar_items():
+    items = [(c["id"], c["question"], c["expected_kind"]) for c in CANDIDATES]
+    for name in ("questions.yaml", "dev_drafts.yaml"):
+        items += [(q.id, q.question, q.expected_kind) for q in Q.load_questions(EVAL / name)]
+    return [i for i in items if i[2] == "scalar"]
+
+
+def test_every_scalar_ratio_question_asks_for_a_single_value():
+    """scalar 채점은 1행 1열만 통과시킨다. 분자, 분모, 비율을 같이 낼 수 있는 모호한 문장은 불공정하므로 '하나의 값'을 요구해야 한다."""
+    vague = [qid for qid, text, _ in scalar_items() if any(w in text for w in RATIO_WORDS) and "하나의 값" not in text]
+    assert vague == []
+
+
+def test_ambiguous_ratio_questions_were_rewritten_to_ask_for_one_value():
+    for qid in ("Q21", "Q23", "Q31"):
+        c = by_id(qid)
+        assert c["expected_kind"] == "scalar" and "하나의 값으로만" in c["question"], qid
+
+
+def test_dev_ratio_question_whose_wording_is_fixed_is_a_rows_question():
+    """DEV01 의 문장은 eval_notes.md 의 개발용 질문과 같아야 해서 고칠 수 없다. 대신 kind 를 rows 로 둔다."""
+    dev01 = next(q for q in Q.load_questions(EVAL / "dev_drafts.yaml") if q.id == "DEV01")
+    assert dev01.question == "구매 전환율은?" and dev01.expected_kind == "rows"
+    assert dev01.tolerance.get("accept_percent_or_ratio") is True
+
+
+def test_the_other_scalar_questions_are_single_count_or_amount_questions():
+    singles = [(qid, text) for qid, text, _ in scalar_items() if not any(w in text for w in RATIO_WORDS)]
+    assert len(singles) >= 20
+    # "구매 건수는?"(DEV03)은 개발용 문장이 고정돼 있고, 건수 하나를 묻는 형태라서 "건수는?" 도 단일 값 질문으로 본다
+    markers = ("몇 명", "몇 건", "몇 개", "얼마", "건수는?")
+    assert [qid for qid, text in singles if not any(w in text for w in markers)] == []

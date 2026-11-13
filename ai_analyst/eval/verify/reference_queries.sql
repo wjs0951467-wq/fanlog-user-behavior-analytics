@@ -128,7 +128,7 @@ WHERE ended_at_utc IS NULL;
 SELECT COUNT(*) AS checkout_started_orders
 FROM fact_order;
 
--- [Q21] W1 참여 재방문율은 얼마야?
+-- [Q21] W1 참여 재방문율을 하나의 값으로만 알려줘.
 -- (정의 미확정: 아래 SQL 은 임의의 가정으로 쓴 자리 채움이다. PRD 의 공식 W1 정의를 먼저 정한다)
 SELECT ROUND(COUNT(DISTINCT w1.user_id)::numeric / COUNT(DISTINCT w0.user_id), 4) AS w1_retention
 FROM mart_user_daily w0
@@ -147,7 +147,7 @@ WHERE m.activity_date_kst = (SELECT MAX(activity_date_kst) FROM mart_user_daily)
   AND m.activity_status IN ('at_risk', 'dormant')
   AND u.is_deleted IS NOT TRUE;
 
--- [Q23] 구매 건수 중에서 환불(부분 환불 포함)된 주문의 비율은 얼마야?
+-- [Q23] 구매 건수 중에서 환불(부분 환불 포함)된 주문의 비율을 하나의 값으로만 알려줘.
 SELECT ROUND(COUNT(*) FILTER (WHERE status IN ('refunded', 'partially_refunded'))::numeric / COUNT(*), 4) AS refund_rate
 FROM fact_order
 WHERE status <> 'pending';
@@ -158,12 +158,12 @@ FROM fact_order
 WHERE status <> 'pending'
   AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date BETWEEN DATE '2026-02-01' AND DATE '2026-02-28';
 
--- [Q25] 최근 7일 동안 구매 건수는 몇 건이야?
+-- [Q25] 최근 7일 동안 구매 건수는 몇 건이야? 데이터의 마지막 날을 포함해서 7일로 세어줘.
 SELECT COUNT(*) AS purchases
 FROM fact_order
 WHERE status <> 'pending'
-  AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date >
-      (SELECT MAX((completed_at_utc AT TIME ZONE 'Asia/Seoul')::date) FROM fact_order WHERE status <> 'pending') - 7;
+  AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date >=
+      (SELECT MAX((completed_at_utc AT TIME ZONE 'Asia/Seoul')::date) FROM fact_order WHERE status <> 'pending') - 6;
 
 -- [Q26] 2026년 3월에 새로 가입한 사용자는 몇 명이야?
 SELECT COUNT(*) AS signups
@@ -171,7 +171,7 @@ FROM dim_user
 WHERE signup_date_kst BETWEEN DATE '2026-03-01' AND DATE '2026-03-31';
 
 -- [Q27] 월별 구매 건수 추이를 보여줘.
-SELECT date_trunc('month', completed_at_utc AT TIME ZONE 'Asia/Seoul')::date AS month, COUNT(*) AS purchases
+SELECT to_char(completed_at_utc AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month, COUNT(*) AS purchases
 FROM fact_order
 WHERE status <> 'pending'
 GROUP BY 1
@@ -192,15 +192,17 @@ SELECT COUNT(*) AS signups
 FROM dim_user
 WHERE signup_date_kst BETWEEN DATE '2026-01-01' AND DATE '2026-03-31';
 
--- [Q31] 장바구니에 담은 건 중에서 구매까지 이어진 비율은 얼마야?
+-- [Q31] 장바구니에 담은 건 중에서 구매까지 이어진 비율을 하나의 값으로만 알려줘.
 SELECT ROUND(COUNT(*) FILTER (WHERE reached_purchase)::numeric / COUNT(*), 4) AS cart_to_purchase_rate
 FROM mart_commerce_funnel
 WHERE reached_add_to_cart;
 
--- [Q32] 한 번이라도 구매한 적 있는 팬은 몇 명이야?
-SELECT COUNT(DISTINCT user_id) AS buyers
-FROM fact_order
-WHERE status <> 'pending';
+-- [Q32] 한 번이라도 구매한 적 있는 팬은 몇 명이야? 탈퇴한 사용자는 빼고.
+SELECT COUNT(DISTINCT o.user_id) AS buyers
+FROM fact_order o
+JOIN dim_user u ON u.user_id = o.user_id
+WHERE o.status <> 'pending'
+  AND u.is_deleted IS NOT TRUE;
 
 -- [Q33] 분석 기간 중에 하루라도 휴면 상태였던 팬은 몇 명이야?
 SELECT COUNT(DISTINCT m.user_id) AS fans

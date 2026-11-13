@@ -382,7 +382,7 @@ candidates:
     source: draft-by-claude-code-2026-11-12
 
   - id: Q21
-    question: "W1 참여 재방문율은 얼마야?"
+    question: "W1 참여 재방문율을 하나의 값으로만 알려줘."
     category: 지표 정의
     expected_kind: scalar
     reference_sql: |-
@@ -425,7 +425,7 @@ candidates:
     source: draft-by-claude-code-2026-11-12
 
   - id: Q23
-    question: "구매 건수 중에서 환불(부분 환불 포함)된 주문의 비율은 얼마야?"
+    question: "구매 건수 중에서 환불(부분 환불 포함)된 주문의 비율을 하나의 값으로만 알려줘."
     category: 지표 정의
     expected_kind: scalar
     reference_sql: |-
@@ -462,18 +462,18 @@ candidates:
     source: draft-by-claude-code-2026-11-12
 
   - id: Q25
-    question: "최근 7일 동안 구매 건수는 몇 건이야?"
+    question: "최근 7일 동안 구매 건수는 몇 건이야? 데이터의 마지막 날을 포함해서 7일로 세어줘."
     category: 기간 해석
     expected_kind: scalar
     reference_sql: |-
       SELECT COUNT(*) AS purchases
       FROM fact_order
       WHERE status <> 'pending'
-        AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date >
-            (SELECT MAX((completed_at_utc AT TIME ZONE 'Asia/Seoul')::date) FROM fact_order WHERE status <> 'pending') - 7
-    reference_note: "conventions: '최근 N일'의 기준일은 CURRENT_DATE 가 아니라 해당 테이블 날짜의 MAX 다. 마지막 날을 포함한 7일(MAX-6 ~ MAX)로 잡았다. '마지막 날 포함 7일'인지 '마지막 날 이전 7일'인지는 사람이 확정해야 한다."
+        AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date >=
+            (SELECT MAX((completed_at_utc AT TIME ZONE 'Asia/Seoul')::date) FROM fact_order WHERE status <> 'pending') - 6
+    reference_note: "conventions: '최근 N일'의 기준일은 CURRENT_DATE 가 아니라 해당 테이블 날짜의 MAX 다. 질문 문장이 \"데이터의 마지막 날을 포함해서 7일\"이라고 못 박았으므로 범위는 마지막 날 - 6일 ~ 마지막 날(양끝 포함, 7일)이다. 결제 완료 시각은 KST 날짜로 바꿔 자른다. 해석은 2026-11-13 에 사람이 정했다."
     trap: "CURRENT_DATE 기준으로 계산하면 0건이 된다(데이터는 2026-03-31 에 끝난다)."
-    likely_wrong: "CURRENT_DATE - 7 을 쓰거나, 경계를 >= MAX - 7 로 잡아 8일을 센다."
+    likely_wrong: "CURRENT_DATE - 7 을 쓰거나, 경계를 >= MAX - 7 로 잡아 8일을 센다(또는 > MAX - 7 로 7일이 아니라 6일을 센다)."
     needs_definition: false
     heldout_candidate: true
     guard_ok: true
@@ -502,14 +502,14 @@ candidates:
     category: 기간 해석
     expected_kind: rows
     reference_sql: |-
-      SELECT date_trunc('month', completed_at_utc AT TIME ZONE 'Asia/Seoul')::date AS month, COUNT(*) AS purchases
+      SELECT to_char(completed_at_utc AT TIME ZONE 'Asia/Seoul', 'YYYY-MM') AS month, COUNT(*) AS purchases
       FROM fact_order
       WHERE status <> 'pending'
       GROUP BY 1
       ORDER BY 1
-    reference_note: "구매 건수(status <> 'pending')를 결제 완료 시각의 KST 월로 묶는다. 월은 그 달 1일 날짜로 표기했다. 모델이 '2026-01' 같은 글자로 내면 값이 같아도 채점에서 떨어질 수 있으니, 사람이 월 표기 형식을 정해야 한다."
+    reference_note: "구매 건수(status <> 'pending')를 결제 완료 시각의 KST 월로 묶는다. 월은 'YYYY-MM' 글자(예: 2026-01)로 표기하기로 2026-11-13 에 사람이 정했다. 질문 문장은 형식을 말하지 않으므로, 모델이 그 달 1일 날짜(2026-01-01)로 내면 값이 같아도 채점에서 떨어진다."
     trap: "UTC 로 월을 자르면 월 경계의 주문이 다른 달로 간다. pending 포함 실수."
-    likely_wrong: "date_trunc('month', completed_at_utc) 를 그대로 쓰거나 created_at_utc 를 쓴다."
+    likely_wrong: "date_trunc('month', completed_at_utc) 를 그대로 쓰거나 created_at_utc 를 쓴다. 월을 날짜(2026-01-01)로 내서 글자 형식과 달라진다."
     needs_definition: false
     heldout_candidate: true
     guard_ok: true
@@ -569,7 +569,7 @@ candidates:
     source: draft-by-claude-code-2026-11-12
 
   - id: Q31
-    question: "장바구니에 담은 건 중에서 구매까지 이어진 비율은 얼마야?"
+    question: "장바구니에 담은 건 중에서 구매까지 이어진 비율을 하나의 값으로만 알려줘."
     category: 함정
     expected_kind: scalar
     reference_sql: |-
@@ -587,16 +587,18 @@ candidates:
     source: draft-by-claude-code-2026-11-12
 
   - id: Q32
-    question: "한 번이라도 구매한 적 있는 팬은 몇 명이야?"
+    question: "한 번이라도 구매한 적 있는 팬은 몇 명이야? 탈퇴한 사용자는 빼고."
     category: 함정
     expected_kind: scalar
     reference_sql: |-
-      SELECT COUNT(DISTINCT user_id) AS buyers
-      FROM fact_order
-      WHERE status <> 'pending'
-    reference_note: "구매는 status <> 'pending' 인 주문이다. 한 사람이 여러 번 구매할 수 있어 사용자를 DISTINCT 로 센다. '구매한 적 있는'은 누적이라 탈퇴자를 포함했다(이 판단은 사람이 확정해야 한다)."
+      SELECT COUNT(DISTINCT o.user_id) AS buyers
+      FROM fact_order o
+      JOIN dim_user u ON u.user_id = o.user_id
+      WHERE o.status <> 'pending'
+        AND u.is_deleted IS NOT TRUE
+    reference_note: "구매는 status <> 'pending' 인 주문이다. 한 사람이 여러 번 구매할 수 있어 사용자를 DISTINCT 로 센다. 질문 문장이 \"탈퇴한 사용자는 빼고\"라고 명시했으므로 dim_user 와 조인해 is_deleted IS NOT TRUE 로 탈퇴자를 제외한다(활동 상태 질문의 기본 규칙과 같다. 2026-11-13 에 사람이 정했다)."
     trap: "pending 주문만 있는 사람을 구매자로 세는 실수, 주문 건수를 사람 수로 답하는 실수."
-    likely_wrong: "status 조건 없이 COUNT(DISTINCT user_id) 를 내거나 COUNT(*) 를 낸다."
+    likely_wrong: "status 조건 없이 COUNT(DISTINCT user_id) 를 내거나 COUNT(*) 를 낸다. 탈퇴자 제외 조건을 빠뜨린다."
     needs_definition: false
     heldout_candidate: true
     guard_ok: true

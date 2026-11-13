@@ -214,3 +214,20 @@ def test_cli_reads_the_result_file_and_the_registry_next_to_it(tmp_path):
     out = io.StringIO()
     assert report.main([str(tmp_path / "run_x.json"), "--out", str(target)], out=out) == 0
     assert target.read_text(encoding="utf-8").startswith("# FANLOG 평가 리포트") and "저장했다" in out.getvalue()
+
+
+def test_failure_table_shows_the_three_extra_classes():
+    """지시에 없던 분류(LLM 오류, 정답 SQL 실행 실패, 기타 오류)도 실패 분류 표에 나온다."""
+    results = [res("H1"), res("H2", passed=False, failure=grading.FAIL_LLM), res("H3", passed=False, failure=grading.FAIL_REFERENCE),
+               res("H4", passed=False, failure=grading.FAIL_OTHER), res("D1", "dev", passed=False, failure=grading.FAIL_LLM)]
+    table = section(report.build_report(run_of(results)), "실패 분류")
+    assert f"| {grading.FAIL_LLM} | 1 | 1 |" in table
+    assert f"| {grading.FAIL_REFERENCE} | 0 | 1 |" in table
+    assert f"| {grading.FAIL_OTHER} | 0 | 1 |" in table
+
+
+def test_every_failure_class_appears_in_the_table_when_it_occurs():
+    results = [res(f"H{n}", passed=False, failure=name) for n, name in enumerate(grading.FAILURE_CLASSES, 1)]
+    table = section(report.build_report(run_of(results)), "실패 분류")
+    for name in grading.FAILURE_CLASSES:
+        assert f"| {name} | 0 | 1 |" in table, name

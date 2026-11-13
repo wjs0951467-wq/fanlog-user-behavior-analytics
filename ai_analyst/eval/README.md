@@ -10,7 +10,7 @@ Text-to-SQL(`app.text2sql.ask`)이 낸 SQL 의 실행 결과를, 사람이 검�
 | 파일 | 하는 일 |
 |---|---|
 | `questions.yaml` | 평가 질문 파일. 지금은 스키마를 보여주는 예시 2문항(개발용)뿐이다 |
-| `dev_drafts.yaml` | 개발용 6문항 중 나머지 4문항의 정답 SQL 초안 (같은 형식) |
+| `dev_drafts.yaml` | 개발용 6문항 중 나머지 4문항의 정답 SQL 초안 (같은 형식). 아직 `questions.yaml` 로 옮기지 않았다: 정답 SQL 을 사람이 DBeaver 로 실행해 eval_notes.md 의 정답과 같은지 확인하기 전이고, `verified` 는 사람이 정하기 때문이다 |
 | `candidates.yaml` | 보류 후보 질문 초안 40문항. 정답이 아니다 |
 | `verify/reference_queries.sql` | 후보 40문항의 SQL 을 DBeaver 에서 한 문항씩 실행할 수 있게 모은 파일 |
 | `verify/VERIFY_CHECKLIST.md` | 사람이 결과를 적고 verified 를 체크하는 표 |
@@ -21,7 +21,7 @@ Text-to-SQL(`app.text2sql.ask`)이 낸 SQL 의 실행 결과를, 사람이 검�
 | `exposure.py` | 오염 방지. 보류 질문을 처음 보인 때의 시맨틱 레이어 해시를 기록한다 |
 | `report.py` | 결과 파일로 마크다운 리포트를 만든다 |
 | `PROGRESS.md` | 이 초안을 만든 과정의 기록과 사람이 결정해야 할 것 |
-| `results/` | 실행 결과(JSON)와 보류 질문 노출 기록이 쌓이는 곳 (실행하면 생긴다) |
+| `results/` | 실행 결과(JSON)가 쌓이는 곳 (실행하면 생긴다). git 에서 제외되고, 보류 질문 노출 기록 `results/heldout_exposure.json` 하나만 추적한다 (`.gitignore`) |
 
 ## 실행 방법
 
@@ -65,14 +65,15 @@ python -m eval.report eval/results/run_YYYYMMDD_HHMMSS.json --out eval/report.md
 
 ## 채점 규칙
 
-- scalar: 모델의 결과가 정확히 1행이고, 그 행의 숫자 칸 중 하나가 정답과 허용 오차 안에서 같으면 통과.
+- scalar: 모델의 결과가 **정확히 1행 1열**이고 그 값이 정답과 허용 오차 안에서 같을 때만 통과. 분자, 분모, 비율을 같이 낸 답은 그중 한 칸이 맞아도 실패다.
+  그래서 scalar 문항의 문장은 하나의 값만 묻는 형태여야 공정하다(비율 질문은 "하나의 값으로만 알려줘"로 적었다).
   문항의 `tolerance` 로 절대 오차(`abs`), 상대 오차(`rel`), 비율과 퍼센트를 같은 답으로 볼지(`accept_percent_or_ratio`)를 정한다.
 - rows: 행 집합이 같으면 통과. 기본은 순서 무시이고, 질문이 순서를 요구하면 문항에 `ordered: true` 를 둔다.
   열 이름은 보지 않고, 열 순서는 바꿔 가며 맞춰 본다(6열까지). 열 수가 다르면 실패다.
 - refusal: 모델이 거절로 끝나야 통과한다. 숫자를 내놓으면 "거절해야 하는데 답함"으로 실패한다.
 - 실패 분류: 값 불일치 / 가드레일 차단 / DB 오류 / 파싱 실패 / 거짓 거절 / 거절해야 하는데 답함 / 호출 상한 초과.
   여기에 LLM 오류, 정답 SQL 실행 실패, 기타 오류를 더했다.
-- 애매하면 실패로 판정한다. 그래서 형식만 다른 정답(예: 월을 `2026-01` 글자로 낸 답)이 떨어질 수 있다.
+- 애매하면 실패로 판정한다. 그래서 형식만 다른 정답(예: 월을 `2026-01` 글자가 아니라 날짜 `2026-01-01` 로 낸 답)이 떨어질 수 있다.
 
 ## 보류(heldout) 질문 규칙
 
@@ -80,6 +81,7 @@ python -m eval.report eval/results/run_YYYYMMDD_HHMMSS.json --out eval/report.md
 - 확인한 뒤에는 보류 질문을 모델에 시험 삼아 물어보지 않는다. 결과를 보고 시맨틱 레이어를 고치지도 않는다.
 - 고치게 되면 그 문항은 보류가 아니라 개발용으로 옮기고 그 사실을 기록한다.
 - 실행기는 보류 질문을 처음 평가한 때의 `semantic_layer.yaml` sha256 을 `results/heldout_exposure.json` 에 적는다.
+  이 파일만 git 에 올린다(`.gitignore` 가 `eval/results/*` 를 제외하고 이 파일만 예외로 둔다). 그래야 다른 PC 에서도 오염 경고가 동작한다.
   그 뒤 해시가 바뀌면 리포트에 "보류 질문 노출 후 시맨틱 레이어가 바뀜: 해당 문항은 개발용으로 이동해야 함" 경고가 나온다.
   주석만 고쳐도 경고가 뜬다(놓치는 것보다 과하게 알리는 쪽을 골랐다).
 - 리포트는 개발용 정확도와 보류 정확도를 따로 적는다. 일반화의 근거는 보류 정확도뿐이다.
@@ -114,3 +116,4 @@ python -m eval.report eval/results/run_YYYYMMDD_HHMMSS.json --out eval/report.md
 - 에이전트(도구 호출) 경로는 평가하지 않는다. `ask()` 만 평가한다.
 - 요약과 가정(assumptions)의 품질은 채점하지 않는다.
 - `eval/report.md` (실제 리포트)와 README 개편, 아키텍처 도표는 만들지 않았다.
+- scalar 엄격화의 대가: 같은 답을 열을 더 붙여 내는 모델은 떨어진다. 개발용 "구매 전환율은?"처럼 문장을 고칠 수 없는 문항은 kind 를 rows 로 두었지만 열 수가 다르면 실패라는 점은 같다.
