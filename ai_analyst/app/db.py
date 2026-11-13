@@ -9,6 +9,12 @@ from .sql_guard import MAX_ROWS
 
 load_dotenv()
 
+# DB 연결을 맺는 데 기다리는 최대 시간(초). 이 제한이 없으면 DB 컨테이너(Docker)가 꺼진 채로 질문을 제출했을 때
+# 연결 시도가 끝나지 않아 질문 전체가 멈추고, 블로킹 중인 서버는 Ctrl+C 에도 바로 반응하지 못했다(사건 기록: DESIGN.md 10장).
+# statement_timeout(문 실행 5초)과 다른 제한이다: 이쪽은 "연결 맺기", 저쪽은 "맺은 뒤 문 실행".
+# libpq 의 connect_timeout 은 초 단위 정수이고, 2초 미만으로 주면 2초로 올려 쓴다.
+CONNECT_TIMEOUT_SECONDS = 5
+
 
 class Rows(list):
     """행 목록. 보통의 list 와 똑같이 쓰고, 상한에서 잘렸는지를 truncated 로 알려준다.
@@ -25,7 +31,8 @@ def get_engine():
     return create_engine(
         os.environ["DATABASE_URL_RO"],
         # 3차 방어선: 계정 설정과 별개로 연결 단위에서도 읽기 전용 + 5초 제한
-        connect_args={"options": "-c default_transaction_read_only=on -c statement_timeout=5000"},
+        connect_args={"connect_timeout": CONNECT_TIMEOUT_SECONDS,
+                      "options": "-c default_transaction_read_only=on -c statement_timeout=5000"},
         pool_pre_ping=True,
     )
 

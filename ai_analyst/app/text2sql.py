@@ -15,7 +15,9 @@ from functools import lru_cache
 from pathlib import Path
 
 from openai import BadRequestError
+from sqlalchemy.exc import InterfaceError, OperationalError
 
+from . import deadline
 from .db import run_query
 from .llm import OutputLimitError, complete
 from .safety import clip_deep, mask_ids, mask_rows
@@ -196,6 +198,16 @@ def is_retryable_db_error(e: Exception) -> bool:
     return bool(code) and (code[:2] in ("42", "22") or code == "57014")
 
 
+def is_db_connection_error(e: Exception) -> bool:
+    """DB 에 연결하지 못했다는 뜻의 오류인가 (연결 시간 초과, 연결 거부, 연결 끊김, 인증 실패).
+
+    SQLAlchemy 의 OperationalError / InterfaceError 이면서 SQL 을 고치면 해결되는 오류(is_retryable_db_error)가 아닌 것이다.
+    OperationalError 에는 문 실행 시간 초과(57014)도 들어 있는데, 그것은 쿼리 문제라서 여기서 뺀다.
+    이 판정은 ask() 의 기존 규칙(재시도 못 하는 DB 오류는 DB_CONNECTION_ERROR 로 끝낸다)과 같은 기준이다.
+    """
+    return isinstance(e, (OperationalError, InterfaceError)) and not is_retryable_db_error(e)
+
+
 # 따옴표로 감싼 조각. 작은따옴표는 영어 단어 속 아포스트로피(don't)와 헷갈리지 않게 "앞이 글자가 아닐 때"만 시작으로 본다.
 _QUOTED = re.compile(r'"([^"]*)"|(?<![A-Za-z])\'([^\']*)\'')
 VALUE_MASK = "[값]"
@@ -337,6 +349,9 @@ def ask(question: str, summarize_result: bool = True) -> dict:
     refusal_retried = False  # 거짓 거절 교정은 질문당 1회만
 
     for _ in range(MAX_SQL_CALLS):
+        if deadline.expired():  # 질문 전체 마감이 지났으면 새 LLM 호출을 시작하지 않는다 (마감이 걸리지 않은 호출은 항상 False)
+            result["error"] = deadline.TIMEOUT_ERROR
+            return result
         try:
             reply = _call_llm(result, system, messages, json_mode=True)
         except Exception as e:  # API 오류(인증, 한도 등)는 SQL 문제가 아니므로 재시도하지 않는다
@@ -393,7 +408,7 @@ def ask(question: str, summarize_result: bool = True) -> dict:
                                   row_cap_note=ROW_CAP_NOTE if len(rows) == MAX_ROWS else None)
                     if not rows:
                         result["summary"] = NO_DATA_SUMMARY  # LLM 을 부르지 않는다 (호출 절약, 숫자 지어낼 여지 없음)
-                    elif summarize_result:
+                    elif summarize_result and not deadline.expired():  # 마감 뒤에는 요약 호출을 건너뛴다 (숫자는 이미 있다)
                         result["summary"] = summarize(result)
                         if result["summary"]:
                             result["summary"] = mask_ids(result["summary"])  # 질문에 있던 ID 를 요약이 되풀이할 수 있다

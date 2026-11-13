@@ -15,7 +15,7 @@ run 의 반환값 (모든 도구 공통)
 import json
 from functools import lru_cache
 
-from . import actions, churn, numcheck
+from . import actions, churn, deadline, numcheck
 from .llm import complete
 from .safety import MODEL_TEXT_CHARS, clip_deep, clip_text
 from .text2sql import MAX_SQL_CALLS, ask, llm_error_text
@@ -264,6 +264,8 @@ def run_recommend_actions(args: dict) -> dict:
     usage = no_usage()
     errors = []
     for _ in range(2):  # 형식 위반이면 1회만 다시 시킨다 (이 2회는 질문당 예산 안에서 센다)
+        if deadline.expired():  # 질문 전체 마감이 지났으면 새 LLM 호출을 시작하지 않는다
+            return {**error_result(deadline.TIMEOUT_ERROR), "usage": usage}
         usage["llm_calls"] += 1
         try:
             reply = complete(actions.ACTION_RULES, messages, json_mode=True)
