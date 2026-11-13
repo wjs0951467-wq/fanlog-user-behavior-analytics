@@ -19,6 +19,9 @@ def item(qid, split="heldout", kind="scalar", verified=True, **over):
     base = {"id": qid, "question": f"{qid} 질문", "category": "거절" if kind == "refusal" else "단순 집계", "split": split,
             "expected_kind": kind, "verified": verified, "source": "test",
             "reference_sql": None if kind == "refusal" else "SELECT COUNT(*) FROM dim_user"}
+    if verified:  # verified: true 에는 사람의 확인 기록이 있어야 로더를 통과한다 (이 테스트의 관심사는 아니라 기본값을 채운다)
+        base["verification"] = {"verified_by": "담당자(사람)", "verified_on": "2026-11-13", "method": "test",
+                                "result_value": "1", "independent_check": "일치"}
     base.update(over)
     return base
 

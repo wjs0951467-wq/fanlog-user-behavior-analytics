@@ -17,6 +17,13 @@ def item(**over):
     return {k: v for k, v in base.items() if v is not ...}
 
 
+def good_verification(**over):
+    base = {"verified_by": "담당자(사람)", "verified_on": "2026-11-13", "method": "DBeaver 직접 실행 + 이벤트 테이블 독립 확인",
+            "result_value": "90", "independent_check": "일치"}
+    base.update(over)
+    return {k: v for k, v in base.items() if v is not ...}
+
+
 # ---------- 정상 ----------
 def test_minimal_item_gets_safe_defaults():
     q = Q.parse_questions([item()])[0]
@@ -25,7 +32,8 @@ def test_minimal_item_gets_safe_defaults():
 
 
 def test_all_fields_are_read():
-    q = Q.parse_questions([item(verified=True, tolerance={"abs": 0.01, "rel": 0, "accept_percent_or_ratio": True},
+    q = Q.parse_questions([item(verified=True, verification=good_verification(),
+                                tolerance={"abs": 0.01, "rel": 0, "accept_percent_or_ratio": True},
                                 notes="메모", expected_kind="rows", ordered=True)])[0]
     assert q.verified is True and q.tolerance["abs"] == 0.01 and q.ordered is True and q.notes == "메모"
 
@@ -87,7 +95,7 @@ def test_top_level_shape_is_checked(tmp_path):
 
 # ---------- 검증되지 않은 문항은 실제 실행에서 거부 ----------
 def test_unverified_questions_are_refused_for_real_runs():
-    qs = Q.parse_questions([item(), item(id="X02", question="다른 질문", verified=True)])
+    qs = Q.parse_questions([item(), item(id="X02", question="다른 질문", verified=True, verification=good_verification())])
     with pytest.raises(Q.UnverifiedQuestionError, match="X01") as info:
         Q.require_verified(qs)
     assert "X02" not in str(info.value)
@@ -138,3 +146,89 @@ def test_reference_sql_of_dev_items_passes_the_guard():
     from app.sql_guard import validate_sql
     for q in Q.load_questions(EVAL / "questions.yaml") + Q.load_questions(EVAL / "dev_drafts.yaml"):
         assert re.search("LIMIT", validate_sql(q.reference_sql), re.IGNORECASE), q.id
+
+
+# ---------- verified: true 에는 사람의 확인 근거(verification)가 있어야 한다 ----------
+REQUIRED_KEYS = ("verified_by", "verified_on", "method", "result_value", "independent_check")
+
+
+def problems_of(*items):
+    with pytest.raises(Q.QuestionFileError) as info:
+        Q.parse_questions(list(items))
+    return str(info.value)
+
+
+def test_verification_required_keys_are_exactly_these_five():
+    assert Q.VERIFICATION_REQUIRED == REQUIRED_KEYS and Q.VERIFICATION_OPTIONAL == ("trap_check",)
+
+
+def test_verified_true_with_a_complete_verification_loads_and_keeps_the_record():
+    q = Q.parse_questions([item(verified=True, verification=good_verification(result_value=90))])[0]
+    assert q.verified is True and q.verification["independent_check"] == "일치" and q.verification["result_value"] == 90
+
+
+def test_verified_true_without_verification_is_rejected_and_names_the_question():
+    for over in ({}, {"verification": None}, {"verification": {}}):
+        text = problems_of(item(id="Q99", verified=True, **over))
+        assert "Q99" in text and "verified: true" in text and "verification" in text, over
+
+
+@pytest.mark.parametrize("key", REQUIRED_KEYS)
+def test_missing_required_key_is_named(key):
+    text = problems_of(item(id="Q98", verified=True, verification=good_verification(**{key: ...})))
+    assert "Q98" in text and f"verification.{key}" in text and "없다" in text
+
+
+@pytest.mark.parametrize("key", ("verified_by", "method", "result_value", "independent_check"))
+@pytest.mark.parametrize("bad", ("", "   ", None))
+def test_blank_values_are_rejected_with_question_and_key(key, bad):
+    text = problems_of(item(id="Q97", verified=True, verification=good_verification(**{key: bad})))
+    assert "Q97" in text and f"verification.{key}" in text and "비어" in text
+
+
+@pytest.mark.parametrize("bad", ("2026-13-01", "2026-02-30", "2026/11/13", "26-11-13", "어제", "", "   "))
+def test_verified_on_must_be_a_real_yyyy_mm_dd_date(bad):
+    text = problems_of(item(id="Q96", verified=True, verification=good_verification(verified_on=bad)))
+    assert "Q96" in text and "verification.verified_on" in text and "YYYY-MM-DD" in text
+
+
+def test_verified_on_accepts_a_yaml_date_and_a_string_but_not_a_datetime():
+    import datetime
+    for ok in ("2026-11-13", datetime.date(2026, 11, 13)):
+        assert Q.parse_questions([item(verified=True, verification=good_verification(verified_on=ok))])[0].verified
+    text = problems_of(item(id="Q95", verified=True, verification=good_verification(verified_on=datetime.datetime(2026, 11, 13, 9))))
+    assert "verification.verified_on" in text
+
+
+def test_result_value_may_be_a_number_but_not_a_bool_or_a_list():
+    assert Q.parse_questions([item(verified=True, verification=good_verification(result_value=7))])[0].verified
+    for bad in (True, [7], {"a": 1}):
+        assert "verification.result_value" in problems_of(item(id="Q94", verified=True, verification=good_verification(result_value=bad)))
+
+
+def test_trap_check_is_optional_for_any_question_but_not_blank_when_given():
+    q = Q.parse_questions([item(id="Q50", verified=True, verification=good_verification(trap_check="UTC 로 자르면 12 건, KST 는 7 건"))])[0]
+    assert q.verification["trap_check"].startswith("UTC")
+    text = problems_of(item(id="Q51", verified=True, verification=good_verification(trap_check="  ")))
+    assert "Q51" in text and "verification.trap_check" in text and "비어" in text
+
+
+def test_unknown_verification_keys_and_non_mapping_are_rejected():
+    assert "verification" in problems_of(item(id="Q93", verified=True, verification=good_verification(verifed_by="오타")))
+    assert "verifed_by" in problems_of(item(id="Q93", verified=True, verification=good_verification(verifed_by="오타")))
+    assert "매핑" in problems_of(item(id="Q92", verified=True, verification="확인함"))
+
+
+def test_a_verification_on_an_unverified_question_is_still_checked():
+    """verified: false 여도 적어 둔 기록이 깨져 있으면 조용히 넘기지 않는다."""
+    assert "verification.method" in problems_of(item(id="Q91", verified=False, verification=good_verification(method="")))
+
+
+def test_every_problem_is_reported_together():
+    text = problems_of(item(id="Q90", verified=True, verification=good_verification(verified_by="", verified_on="어제")))
+    assert "verification.verified_by" in text and "verification.verified_on" in text
+
+
+def test_a_verification_without_the_flag_does_not_make_a_question_verified():
+    q = Q.parse_questions([item(verification=good_verification())])[0]
+    assert q.verified is False

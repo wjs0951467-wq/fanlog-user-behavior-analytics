@@ -477,7 +477,13 @@ candidates:
     needs_definition: false
     heldout_candidate: true
     guard_ok: true
-    verified: false
+    verified: true
+    verification:
+      verified_by: "담당자(사람)"
+      verified_on: "2026-11-13"
+      method: "DBeaver 직접 실행 + 이벤트 테이블 독립 확인"
+      result_value: "90"
+      independent_check: "일치"
     source: draft-by-claude-code-2026-11-12
 
   - id: Q26
@@ -655,13 +661,20 @@ candidates:
       FROM fact_order
       WHERE status <> 'pending'
         AND (completed_at_utc AT TIME ZONE 'Asia/Seoul')::date = DATE '2026-01-01'
-    reference_note: "날짜는 KST 기준이다. KST 1월 1일은 UTC 로 2025-12-31 15:00 ~ 2026-01-01 15:00 이다. 프로파일상 가장 이른 결제 완료가 UTC 2025-12-31 15:45 라서 UTC 날짜로 자르면 그 구간이 빠진다. 결과가 0 이면 이 문항은 구분력이 없으니 사람이 확인해야 한다."
+    reference_note: "날짜는 KST 기준이다. KST 1월 1일은 UTC 로 2025-12-31 15:00 ~ 2026-01-01 15:00 이다. 프로파일상 가장 이른 결제 완료가 UTC 2025-12-31 15:45 라서 UTC 날짜로 자르면 그 구간이 빠진다. 결과가 0 이면 이 문항은 구분력이 없으니 사람이 확인해야 한다. \"구매 완료\"는 status <> 'pending' 이다(completed, refunded, partially_refunded 를 포함한다)."
     trap: "KST 와 UTC 의 날짜 차이. UTC 로 자르면 다른 숫자가 나온다."
     likely_wrong: "completed_at_utc::date = '2026-01-01' 로 자른다."
     needs_definition: false
     heldout_candidate: true
     guard_ok: true
-    verified: false
+    verified: true
+    verification:
+      verified_by: "담당자(사람)"
+      verified_on: "2026-11-13"
+      method: "DBeaver 직접 실행 + 이벤트 테이블 독립 확인"
+      result_value: "7"
+      independent_check: "일치"
+      trap_check: "UTC 로 자르면 12 건, KST 는 7 건"
     source: draft-by-claude-code-2026-11-12
 
   # ============================== 거절 (5): 데이터에 없는 정보 ==============================

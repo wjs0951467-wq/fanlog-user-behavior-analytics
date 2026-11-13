@@ -14,7 +14,9 @@ EVAL = ROOT / "eval"
 SOURCE = "draft-by-claude-code-2026-11-12"
 FIELDS = {"id", "question", "category", "expected_kind", "reference_sql", "reference_note", "trap", "likely_wrong",
           "needs_definition", "heldout_candidate", "guard_ok", "verified", "source"}
-OPTIONAL_FIELDS = {"tolerance", "ordered"}
+OPTIONAL_FIELDS = {"tolerance", "ordered", "verification"}
+# 사람이 DBeaver 로 확인을 끝낸 문항은 정확히 이 둘뿐이다 (2026-11-13). 다른 문항을 true 로 바꾸면 이 테스트가 실패한다.
+VERIFIED_IDS = ["Q25", "Q35"]
 
 # 후보에서 빼야 하는 질문: 개발용 6문항, 이미 쓴 시나리오와 안전 확인 질문, 시맨틱 레이어의 예시 2개
 EXCLUDED_QUESTIONS = (
@@ -71,7 +73,8 @@ def test_questions_are_all_different():
 @pytest.mark.parametrize("c", CANDIDATES, ids=IDS)
 def test_fields_and_fixed_values(c):
     assert FIELDS <= set(c) and set(c) <= FIELDS | OPTIONAL_FIELDS
-    assert c["verified"] is False            # 초안은 전부 미검증이다
+    assert c["verified"] is (c["id"] in VERIFIED_IDS)   # verified: true 는 Q25, Q35 뿐이고 나머지는 전부 미검증이다
+    assert ("verification" in c) is (c["id"] in VERIFIED_IDS)   # 확인 근거는 확인한 문항에만 있다
     assert c["source"] == SOURCE
     assert c["category"] in Q.CATEGORIES and c["expected_kind"] in Q.KINDS
     for key in ("question", "reference_note", "trap", "likely_wrong"):
@@ -150,14 +153,42 @@ def as_question(c):
         item["tolerance"] = c["tolerance"]
     if "ordered" in c:
         item["ordered"] = c["ordered"]
+    if "verification" in c:
+        item["verification"] = c["verification"]
     return item
 
 
 def test_candidates_load_through_the_question_schema():
     questions = Q.parse_questions([as_question(c) for c in CANDIDATES])
-    assert len(questions) == 40 and all(q.verified is False for q in questions)
-    with pytest.raises(Q.UnverifiedQuestionError):
-        Q.require_verified(questions)  # 초안은 실제 실행에 쓸 수 없다
+    assert len(questions) == 40
+    assert [q.id for q in questions if q.verified] == VERIFIED_IDS
+    assert all(q.verified is False for q in questions if q.id not in VERIFIED_IDS)
+    assert all(q.verification for q in questions if q.verified)      # true 인 문항에는 확인 근거가 있다
+    with pytest.raises(Q.UnverifiedQuestionError) as info:
+        Q.require_verified(questions)  # 나머지 38문항이 미검증이라 40문항 전체는 실제 실행에 쓸 수 없다
+    assert "Q25" not in str(info.value) and "Q35" not in str(info.value) and "Q01" in str(info.value)
+    Q.require_verified([q for q in questions if q.id in VERIFIED_IDS])  # 확인한 두 문항만이면 통과
+
+
+@pytest.mark.parametrize("qid", VERIFIED_IDS)
+def test_dropping_the_verification_of_a_verified_candidate_is_blocked_by_the_loader(qid):
+    """후보 40문항 전체가 verification 규칙을 거친다: 근거를 지우면 로딩 오류가 나고 어느 문항인지 알려준다."""
+    items = [as_question(c) for c in CANDIDATES]
+    for item in items:
+        if item["id"] == qid:
+            del item["verification"]
+    with pytest.raises(Q.QuestionFileError, match=qid):
+        Q.parse_questions(items)
+
+
+def test_flipping_any_other_candidate_to_true_without_a_basis_is_blocked_by_the_loader():
+    for c in CANDIDATES:
+        if c["id"] in VERIFIED_IDS:
+            continue
+        items = [as_question(x) for x in CANDIDATES]
+        next(i for i in items if i["id"] == c["id"])["verified"] = True
+        with pytest.raises(Q.QuestionFileError, match=c["id"]):
+            Q.parse_questions(items)
 
 
 def test_candidate_ids_do_not_collide_with_existing_question_files():
@@ -194,7 +225,11 @@ def test_checklist_has_a_row_for_every_candidate():
     for c, line in zip(CANDIDATES, rows):
         cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
         assert len(cells) == 5 and cells[1] == c["question"], c["id"]
-        assert cells[2] and cells[3] == "" and cells[4] == "[ ]"  # 결과 칸은 비어 있고 체크는 사람이 한다
+        assert cells[2]
+        if c["id"] in VERIFIED_IDS:  # 사람이 확인한 두 문항만 결과 칸과 체크가 채워져 있다
+            assert cells[3].startswith(str(c["verification"]["result_value"])) and cells[4] == "[x]", c["id"]
+        else:
+            assert cells[3] == "" and cells[4] == "[ ]", c["id"]  # 나머지는 비어 있다
 
 
 # ---------- 2026-11-13 결정 반영: Q25, Q27, Q32 ----------
@@ -269,3 +304,34 @@ def test_the_other_scalar_questions_are_single_count_or_amount_questions():
     # "구매 건수는?"(DEV03)은 개발용 문장이 고정돼 있고, 건수 하나를 묻는 형태라서 "건수는?" 도 단일 값 질문으로 본다
     markers = ("몇 명", "몇 건", "몇 개", "얼마", "건수는?")
     assert [qid for qid, text in singles if not any(w in text for w in markers)] == []
+
+
+# ---------- 2026-11-13 사람의 확인 기록: Q25, Q35 ----------
+REQUIRED_VERIFICATION = {"verified_by", "verified_on", "method", "result_value", "independent_check"}
+
+
+@pytest.mark.parametrize("qid, value", [("Q25", "90"), ("Q35", "7")])
+def test_verification_records_of_the_two_confirmed_items(qid, value):
+    v = by_id(qid)["verification"]
+    assert REQUIRED_VERIFICATION <= set(v) and set(v) <= REQUIRED_VERIFICATION | {"trap_check"}
+    assert v["verified_by"] == "담당자(사람)"          # 이름은 추정해서 적지 않는다
+    assert str(v["verified_on"]) == "2026-11-13"
+    assert v["method"] == "DBeaver 직접 실행 + 이벤트 테이블 독립 확인"
+    assert str(v["result_value"]) == value and v["independent_check"] == "일치"
+
+
+def test_only_q35_records_a_trap_check():
+    assert by_id("Q35")["verification"]["trap_check"] == "UTC 로 자르면 12 건, KST 는 7 건"
+    assert "trap_check" not in by_id("Q25")["verification"]
+
+
+def test_q35_reference_note_defines_completed_purchase():
+    note = by_id("Q35")["reference_note"]
+    assert "status <> 'pending'" in note and "completed" in note and "refunded" in note and "partially_refunded" in note
+
+
+def test_the_two_confirmed_items_keep_their_sql_and_the_result_value_is_not_part_of_grading():
+    """result_value 는 사람의 기록이다. 채점은 SQL 실행 결과끼리 비교하므로 Question 에서 채점 입력으로 쓰이지 않는다."""
+    import inspect
+    from eval import grading
+    assert "verification" not in inspect.getsource(grading) and "result_value" not in inspect.getsource(grading)
